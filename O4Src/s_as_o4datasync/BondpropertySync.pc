@@ -1,0 +1,383 @@
+#include "BondpropertySync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CBondpropertySync::CBondpropertySync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tbondproperty");
+    strcpy(m_sSrcView, "VO4JC_BONDPROPERTY");
+    strcpy(m_sTmpTable, "sync_bondproperty");
+    strcpy(m_sDstTable, "jc_tbondproperty");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CBondpropertySync::~CBondpropertySync()
+{
+}
+
+bool CBondpropertySync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct BondpropertyRecord
+    {
+        char market_no[BATCH_ROWS][2];
+        char report_code[BATCH_ROWS][33];
+        int begincal_date[BATCH_ROWS];
+        int maturity_date[BATCH_ROWS];
+        int publish_date[BATCH_ROWS];
+        double duration_year[BATCH_ROWS];
+        double publish_price[BATCH_ROWS];
+        double year_rate[BATCH_ROWS];
+        int rate_days[BATCH_ROWS];
+        double pay_interval[BATCH_ROWS];
+        double bond_interest[BATCH_ROWS];
+        double real_interest[BATCH_ROWS];
+        double next_tradedate_interest[BATCH_ROWS];
+        char bond_inside_appraise[BATCH_ROWS][2];
+        char bond_outer_appraise[BATCH_ROWS][2];
+        char basic_rate_type[BATCH_ROWS][2];
+        char investor_operation_type[BATCH_ROWS][2];
+        int investor_operation_date[BATCH_ROWS];
+        char publisher_operation_type[BATCH_ROWS][2];
+        int publisher_operation_date[BATCH_ROWS];
+        char trustee[BATCH_ROWS][2];
+        char interest_rate_type[BATCH_ROWS][2];
+        char pay_interest_type[BATCH_ROWS][2];
+        double left_term[BATCH_ROWS];
+        double ms_maturity[BATCH_ROWS];
+        double maturity_adjust[BATCH_ROWS];
+        double change_price[BATCH_ROWS];
+        char net_price_type[BATCH_ROWS][2];
+        int change_begin_date[BATCH_ROWS];
+        int change_end_date[BATCH_ROWS];
+        double investor_operation_price[BATCH_ROWS];
+        double publisher_operation_price[BATCH_ROWS];
+        int trade_deadline[BATCH_ROWS];
+        double fair_yield_ratio[BATCH_ROWS];
+        double valuate_duration[BATCH_ROWS];
+        double valuate_convexity[BATCH_ROWS];
+        double valuate_point_value[BATCH_ROWS];
+        double valuate_spread_duration[BATCH_ROWS];
+        double valuate_rate_duration[BATCH_ROWS];
+        double yesterday_change_price[BATCH_ROWS];
+        double point_value[BATCH_ROWS];
+        double convexity[BATCH_ROWS];
+        int startcal_date[BATCH_ROWS];
+        char gz_interest_calc_method[BATCH_ROWS][2];
+        char paymentofinterest_type[BATCH_ROWS][2];
+        int guarantor_id[BATCH_ROWS];
+        double bp_ceiling[BATCH_ROWS];
+        double bp_floor[BATCH_ROWS];
+        int year[BATCH_ROWS];
+        int times[BATCH_ROWS];
+        char moody_appraise[BATCH_ROWS][2];
+        char fitch_appraise[BATCH_ROWS][2];
+        char sp_appraise[BATCH_ROWS][2];
+        char other_appraise_one[BATCH_ROWS][2];
+        char other_appraise_two[BATCH_ROWS][2];
+        char interest_type_ex[BATCH_ROWS][2];
+        char pay_capital_type[BATCH_ROWS][2];
+        char yield_rate_type[BATCH_ROWS][2];
+        double today_interest[BATCH_ROWS];
+        double curr_face_price[BATCH_ROWS];
+        char ratedays_calc_type[BATCH_ROWS][2];
+        int nextpayment_date[BATCH_ROWS];
+        int bond_outer_appraise_date[BATCH_ROWS];
+        int zqhs_begindate[BATCH_ROWS];
+        int zqhs_enddate[BATCH_ROWS];
+        char stock_type[BATCH_ROWS][3];
+        int bond_count[BATCH_ROWS];
+        double face_value[BATCH_ROWS];
+    } BondpropertyRecord;
+    BondpropertyRecord *lpBondpropertyRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpBondpropertyRecord =  new BondpropertyRecord();
+    if (NULL == lpBondpropertyRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【BondpropertyRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpBondpropertyRecord, 0, sizeof (BondpropertyRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select market_no, report_code, begincal_date, maturity_date, publish_date, duration_year, 
+        publish_price, year_rate, rate_days, pay_interval, bond_interest, real_interest, 
+        next_tradedate_interest, bond_inside_appraise, bond_outer_appraise, basic_rate_type, 
+        investor_operation_type, investor_operation_date, publisher_operation_type, 
+        publisher_operation_date, trustee, interest_rate_type, pay_interest_type, left_term, ms_maturity, 
+        maturity_adjust, change_price, net_price_type, change_begin_date, change_end_date, 
+        investor_operation_price, publisher_operation_price, trade_deadline, fair_yield_ratio, 
+        valuate_duration, valuate_convexity, valuate_point_value, valuate_spread_duration, 
+        valuate_rate_duration, yesterday_change_price, point_value, convexity, startcal_date, 
+        gz_interest_calc_method, paymentofinterest_type, guarantor_id, bp_ceiling, bp_floor, year, 
+        times, moody_appraise, fitch_appraise, sp_appraise, other_appraise_one, other_appraise_two, 
+        interest_type_ex, pay_capital_type, yield_rate_type, today_interest, curr_face_price, 
+        ratedays_calc_type, nextpayment_date, bond_outer_appraise_date, zqhs_begindate, zqhs_enddate, 
+        stock_type,bond_count,face_value from VO4JC_BONDPROPERTY;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpBondpropertyRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpBondpropertyRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpBondpropertyRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_bondproperty(market_no, report_code, begincal_date, maturity_date, publish_date, duration_year, publish_price, year_rate, rate_days, pay_interval, bond_interest, real_interest, next_tradedate_interest, bond_inside_appraise, bond_outer_appraise, basic_rate_type,
+             investor_operation_type, investor_operation_date, publisher_operation_type, publisher_operation_date, trustee, interest_rate_type, pay_interest_type, left_term, ms_maturity, maturity_adjust, change_price, net_price_type, change_begin_date, change_end_date, investor_operation_price, 
+             publisher_operation_price, trade_deadline, fair_yield_ratio, valuate_duration, valuate_convexity, valuate_point_value, valuate_spread_duration, valuate_rate_duration, yesterday_change_price, point_value, convexity, startcal_date, gz_interest_calc_method, paymentofinterest_type, guarantor_id,
+             bp_ceiling, bp_floor, year, times, moody_appraise, fitch_appraise, sp_appraise, other_appraise_one, other_appraise_two, interest_type_ex, pay_capital_type, yield_rate_type, today_interest, curr_face_price, ratedays_calc_type, nextpayment_date, bond_outer_appraise_date, zqhs_begindate, zqhs_enddate,
+             stock_type,bond_count,face_value)
+             values(rtrim(:lpBondpropertyRecord->market_no),
+										rtrim(:lpBondpropertyRecord->report_code),
+										:lpBondpropertyRecord->begincal_date,
+										:lpBondpropertyRecord->maturity_date,
+										:lpBondpropertyRecord->publish_date,
+										:lpBondpropertyRecord->duration_year,
+										:lpBondpropertyRecord->publish_price,
+										:lpBondpropertyRecord->year_rate,
+										:lpBondpropertyRecord->rate_days,
+										:lpBondpropertyRecord->pay_interval,
+										:lpBondpropertyRecord->bond_interest,
+										:lpBondpropertyRecord->real_interest,
+										:lpBondpropertyRecord->next_tradedate_interest,
+										rtrim(:lpBondpropertyRecord->bond_inside_appraise),
+										rtrim(:lpBondpropertyRecord->bond_outer_appraise),
+										rtrim(:lpBondpropertyRecord->basic_rate_type),
+										rtrim(:lpBondpropertyRecord->investor_operation_type),
+										:lpBondpropertyRecord->investor_operation_date,
+										rtrim(:lpBondpropertyRecord->publisher_operation_type),
+										:lpBondpropertyRecord->publisher_operation_date,
+										rtrim(:lpBondpropertyRecord->trustee),
+										rtrim(:lpBondpropertyRecord->interest_rate_type),
+										rtrim(:lpBondpropertyRecord->pay_interest_type),
+										:lpBondpropertyRecord->left_term,
+										:lpBondpropertyRecord->ms_maturity,
+										:lpBondpropertyRecord->maturity_adjust,
+										:lpBondpropertyRecord->change_price,
+										rtrim(:lpBondpropertyRecord->net_price_type),
+										:lpBondpropertyRecord->change_begin_date,
+										:lpBondpropertyRecord->change_end_date,
+										:lpBondpropertyRecord->investor_operation_price,
+										:lpBondpropertyRecord->publisher_operation_price,
+										:lpBondpropertyRecord->trade_deadline,
+										:lpBondpropertyRecord->fair_yield_ratio,
+										:lpBondpropertyRecord->valuate_duration,
+										:lpBondpropertyRecord->valuate_convexity,
+										:lpBondpropertyRecord->valuate_point_value,
+										:lpBondpropertyRecord->valuate_spread_duration,
+										:lpBondpropertyRecord->valuate_rate_duration,
+										:lpBondpropertyRecord->yesterday_change_price,
+										:lpBondpropertyRecord->point_value,
+										:lpBondpropertyRecord->convexity,
+										:lpBondpropertyRecord->startcal_date,
+										rtrim(:lpBondpropertyRecord->gz_interest_calc_method),
+										rtrim(:lpBondpropertyRecord->paymentofinterest_type),
+										:lpBondpropertyRecord->guarantor_id,
+										:lpBondpropertyRecord->bp_ceiling,
+										:lpBondpropertyRecord->bp_floor,
+										:lpBondpropertyRecord->year,
+										:lpBondpropertyRecord->times,
+										rtrim(:lpBondpropertyRecord->moody_appraise),
+										rtrim(:lpBondpropertyRecord->fitch_appraise),
+										rtrim(:lpBondpropertyRecord->sp_appraise),
+										rtrim(:lpBondpropertyRecord->other_appraise_one),
+										rtrim(:lpBondpropertyRecord->other_appraise_two),
+										rtrim(:lpBondpropertyRecord->interest_type_ex),
+										rtrim(:lpBondpropertyRecord->pay_capital_type),
+										rtrim(:lpBondpropertyRecord->yield_rate_type),
+										:lpBondpropertyRecord->today_interest,
+										:lpBondpropertyRecord->curr_face_price,
+										rtrim(:lpBondpropertyRecord->ratedays_calc_type),
+										:lpBondpropertyRecord->nextpayment_date,
+										:lpBondpropertyRecord->bond_outer_appraise_date,
+										:lpBondpropertyRecord->zqhs_begindate,
+										:lpBondpropertyRecord->zqhs_enddate,
+										rtrim(:lpBondpropertyRecord->stock_type),
+                                        :lpBondpropertyRecord->bond_count,
+                                        :lpBondpropertyRecord->face_value);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpBondpropertyRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpBondpropertyRecord;
+    return true;
+}
+
+bool CBondpropertySync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始导入数据到O4表【" << m_sDstTable << "】");
+
+    if (!DropTableIndex())
+        return false;
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_START_INTER_CODE NUMBER := 0;"
+            "  V_INIT_DATE NUMBER;"
+            "  V_INIT_TYPE       CHAR(1);"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  V_INIT_TYPE      := '%c';"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            ""
+            "  SELECT MAX(TO_NUMBER(SUBSTR(TO_CHAR(INTER_CODE), 1, 7)))"
+            "    INTO V_START_INTER_CODE"
+            "    FROM (SELECT INTER_CODE,"
+            "                 CASE"
+            "                   WHEN MARKET_NO IN (1, 2, 5) AND LENGTH(REPORT_CODE) <= 6 AND"
+            "                        REGEXP_LIKE(REPORT_CODE, '^[0-9]+$') THEN"
+            "                    1"
+            "                   ELSE"
+            "                    0"
+            "                 END MM"
+            "            FROM JC_TCONVERTINTERCODE)"
+            "   WHERE MM = 0;"
+            "  V_START_INTER_CODE := CASE"
+            "                          WHEN V_START_INTER_CODE IS NULL THEN"
+            "                           0"
+            "                          ELSE"
+            "                           V_START_INTER_CODE - 1000000"
+            "                        END;"
+            ""
+            "  SELECT INIT_DATE INTO V_INIT_DATE FROM JC_TSYSTEMINFO;"
+            ""
+            "  EXECUTE IMMEDIATE 'INSERT INTO '||V_TABLE_NAME_O4||' (' ||"
+            "                    'INTER_CODE,                MARKET_NO,                  REPORT_CODE,                STOCK_TYPE,    SYS_DATE,' ||"
+            "                    'MATURITY_DATE,             PUBLISH_DATE,               VALUE_DATE,    DURATION_YEAR,              PUBLISH_PRICE,' ||"
+            "                    'YEAR_RATE,                 RATE_DAYS,                  PAY_INTERVAL,               BOND_INTEREST,' ||"
+            "                    'REAL_INTEREST,             NEXT_TRADEDATE_INTEREST,    BOND_INSIDE_APPRAISE,       BOND_OUTER_APPRAISE,' ||"
+            "                    'BASIC_RATE_TYPE,           INVESTOR_OPERATION_TYPE,    INVESTOR_OPERATION_DATE,    PUBLISHER_OPERATION_TYPE,' ||"
+            "                    'PUBLISHER_OPERATION_DATE,  TRUSTEE,                    INTEREST_RATE_TYPE,         PAY_INTEREST_TYPE,' ||"
+            "                    'LEFT_TERM,                 MS_MATURITY,                MATURITY_ADJUST,            CHANGE_PRICE,' ||"
+            "                    'NET_PRICE_TYPE,            CHANGE_BEGIN_DATE,          CHANGE_END_DATE,            INVESTOR_OPERATION_PRICE,' ||"
+            "                    'PUBLISHER_OPERATION_PRICE, TRADE_DEADLINE,             FAIR_YIELD_RATIO,           VALUATE_DURATION,' ||"
+            "                    'VALUATE_CONVEXITY,         VALUATE_POINT_VALUE,        VALUATE_SPREAD_DURATION,    VALUATE_RATE_DURATION,' ||"
+            "                    'YESTERDAY_CHANGE_PRICE,    POINT_VALUE,                CONVEXITY,                  STARTCAL_DATE,' ||"
+            "                    'GZ_INTEREST_CALC_METHOD,   PAYMENTOFINTEREST_TYPE,     GUARANTOR_ID,               BP_CEILING,' ||"
+            "                    'BP_FLOOR,                  YEAR,                       TIMES,                      MOODY_APPRAISE,' ||"
+            "                    'FITCH_APPRAISE,            SP_APPRAISE,                OTHER_APPRAISE_ONE,         OTHER_APPRAISE_TWO,' ||"
+            "                    'INTEREST_TYPE_EX,          PAY_CAPITAL_TYPE,           YIELD_RATE_TYPE,            TODAY_INTEREST,' ||"
+            "                    'CURR_FACE_PRICE,           RATEDAYS_CALC_TYPE,         NEXTPAYMENT_DATE,           BOND_OUTER_APPRAISE_DATE,' ||"
+            "                    'ZQHS_BEGINDATE,            ZQHS_ENDDATE,               BOND_COUNT,                 FACE_VALUE)' ||"
+            "                    'WITH V_INTER_CODE AS ' ||"
+            "                    '(SELECT V.MARKET_NO_SRC,V.MARKET_NO,V.REPORT_CODE,CASE WHEN V.INTER_CODE IS NOT NULL ' ||"
+            "                    'THEN V.INTER_CODE ' ||"
+            "                    'ELSE ' ||"
+            "                    '      CASE WHEN '||V_INIT_TYPE||'=''1'' THEN NULL ELSE SF_CREATE_INTERCODE_WITH_INDEX(V.MARKET_NO,V.REPORT_CODE,'||V_START_INTER_CODE||'+V.RN) END ' ||"
+            "                    'END INTER_CODE ' ||"
+            "                    'FROM (SELECT T101.*,row_number() OVER(ORDER BY CASE WHEN T101.inter_code IS NULL THEN 1 ELSE 2 END) RN ' ||"
+            "                    ' FROM (SELECT A.MARKET_NO MARKET_NO_SRC, ' ||"
+            "                    '       B.MARKET_NO MARKET_NO, ' ||"
+            "                    '       A.REPORT_CODE REPORT_CODE, ' ||"
+            "                    '       SF_QUERY_INTERCODE(B.MARKET_NO, A.REPORT_CODE) INTER_CODE ' ||"
+            "                    '  FROM SYNC_BONDPROPERTY A, JC_TCONVERTMARKETNO B ' ||"
+            "                    ' WHERE A.MARKET_NO = B.MARKET_NO_SRC) T101 LEFT JOIN jc_tconvertintercode T102 ' ||"
+            "                    ' ON T101.MARKET_NO = T102.market_no ' ||"
+            "                    ' AND T101.REPORT_CODE = T102.report_code) V) ' ||"
+            "                    'SELECT ' ||"
+            "                    't2.inter_code,                      t2.market_no,                          nvl(t2.report_code, '' ''),         nvl(t3.stock_type, 0),' ||"
+            "                    V_INIT_DATE || ' AS init_date, ' ||"
+            "                    'maturity_date,                        publish_date,   begincal_date,        duration_year,                    publish_price, ' ||"
+            "                    'year_rate,                      rate_days,                            pay_interval,                     bond_interest, ' ||"
+            "                    'real_interest,                  next_tradedate_interest,                  nvl(bond_inside_appraise, '' ''),      nvl(bond_outer_appraise, '' ''), ' ||"
+            "                    'nvl(basic_rate_type, '' ''),     nvl(investor_operation_type, '' ''),  investor_operation_date,          nvl(publisher_operation_type, '' ''), ' ||"
+            "                    'publisher_operation_date,        nvl(trustee, '' ''),                  nvl(interest_rate_type, '' ''),        nvl(pay_interest_type, '' ''), ' ||"
+            "                    'left_term,                       ms_maturity,                            maturity_adjust,                 change_price, ' ||"
+            "                    'nvl(net_price_type, '' ''),           change_begin_date,                    change_end_date,                  investor_operation_price, ' ||"
+            "                    'publisher_operation_price,      trade_deadline,                       fair_yield_ratio,                valuate_duration, ' ||"
+            "                    'valuate_convexity,              valuate_point_value,                 valuate_spread_duration,         valuate_rate_duration, ' ||"
+            "                    'yesterday_change_price,         point_value,                         convexity,                       startcal_date, ' ||"
+            "                    'nvl(gz_interest_calc_method, '' ''),  nvl(paymentofinterest_type, '' ''),   guarantor_id,                     bp_ceiling, ' ||"
+            "                    'bp_floor,                       year,                                 times,                            nvl(moody_appraise, '' ''), ' ||"
+            "                    'nvl(fitch_appraise, '' ''),      nvl(sp_appraise, '' ''),              nvl(other_appraise_one, '' ''),   nvl(other_appraise_two, '' ''), ' ||"
+            "                    'nvl(interest_type_ex, '' ''),    nvl(pay_capital_type, '' ''),         nvl(yield_rate_type, '' ''),     today_interest, ' ||"
+            "                    'curr_face_price,                nvl(ratedays_calc_type, '' ''),       nextpayment_date,                 bond_outer_appraise_date, ' ||"
+            "                    'zqhs_begindate,                  zqhs_enddate,                        bond_count,                 face_value  ' ||"
+            "                    'FROM '||V_TABLE_NAME_TMP||' t1,V_INTER_CODE t2,JC_TCONVERTSTOCKTYPE t3 WHERE t1.stock_type=t3.stock_type_src AND t1.market_no=t2.market_no_src AND t1.report_code=t2.report_code AND t2.inter_code IS NOT NULL'; "
+            "  IF V_INIT_TYPE<>'1' THEN"
+            "    EXECUTE IMMEDIATE 'insert into jc_tconvertintercode select a.inter_code, a.market_no, a.report_code, '' '' from '||V_TABLE_NAME_O4||' a where a.inter_code not in (select inter_code from jc_tconvertintercode)';"
+            "  END IF;"
+            "  COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable, m_cSyncFlag);
+
+    if (m_cSyncFlag == '2')
+    {
+        hsLockCreateInterCode();
+    }
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (m_cSyncFlag == '2')
+    {
+        hsUnlockCreateInterCode();
+    }
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

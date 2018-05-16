@@ -1,0 +1,237 @@
+#include "PriceintervalSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CPriceintervalSync::CPriceintervalSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tpriceinterval");
+    strcpy(m_sSrcView, "VO4JC_PRICEINTERVAL");
+    strcpy(m_sTmpTable, "sync_priceinterval");
+    strcpy(m_sDstTable, "jc_tpriceinterval");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CPriceintervalSync::~CPriceintervalSync()
+{
+}
+
+bool CPriceintervalSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct PriceintervalRecord
+    {
+        char market_no[BATCH_ROWS][2];
+        char stock_type[BATCH_ROWS][3];
+        int kind_no[BATCH_ROWS];
+        double price_min[BATCH_ROWS];
+        double price_max[BATCH_ROWS];
+        char currency_no[BATCH_ROWS][4];
+        char option_type[BATCH_ROWS][5];
+        double price_interval[BATCH_ROWS];
+    } PriceintervalRecord;
+    PriceintervalRecord *lpPriceintervalRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpPriceintervalRecord = new PriceintervalRecord();
+    if (NULL == lpPriceintervalRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【PriceintervalRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpPriceintervalRecord, 0, sizeof (PriceintervalRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select market_no, stock_type, kind_no, price_min, price_max, currency_no, option_type, price_interval 
+                    from VO4JC_PRICEINTERVAL;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpPriceintervalRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpPriceintervalRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpPriceintervalRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_priceinterval(market_no, stock_type, kind_no, price_min, price_max, currency_no, option_type, price_interval)
+             values(rtrim(:lpPriceintervalRecord->market_no),
+										rtrim(:lpPriceintervalRecord->stock_type),
+										:lpPriceintervalRecord->kind_no,
+										:lpPriceintervalRecord->price_min,
+										:lpPriceintervalRecord->price_max,
+										rtrim(:lpPriceintervalRecord->currency_no),
+										rtrim(:lpPriceintervalRecord->option_type),
+										:lpPriceintervalRecord->price_interval);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpPriceintervalRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpPriceintervalRecord;
+    return true;
+}
+
+bool CPriceintervalSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  v_rowcount number(5);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T2.MARKET_NO, T3.STOCK_TYPE, DECODE(T1.KIND_NO,0,-1,T1.KIND_NO) FUTURE_KIND_ID, T1.PRICE_MIN,'   ||"
+            "       '   T1.PRICE_MAX, NVL(T1.CURRENCY_NO,''CNY''), TO_NUMBER(NVL(T4.SUB_DIC_NO, ''0'')), T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  SYNC_PRICEINTERVAL T1,JC_TCONVERTMARKETNO T2,JC_TCONVERTSTOCKTYPE T3,JC_TCONVERTDIC T4'   ||"
+            "       '   WHERE T1.MARKET_NO = T2.MARKET_NO_SRC '   ||"
+            "       '   AND T1.STOCK_TYPE = T3.STOCK_TYPE_SRC '   ||"
+            "       '   AND T1.OPTION_TYPE = T4.SUB_DIC_SRC '   ||"
+            "       '   AND T4.DIC_NO = 610081';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 55, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 57, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 58, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 59, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 76, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 77, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 82, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 83, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   MARKET_NO,STOCK_TYPE,FUTURE_KIND_ID,PRICE_MIN,PRICE_MAX,CURRENCY_NO,OPTION_TYPE,PRICE_INTERVAL)'   ||"
+            "       '   SELECT T1.MARKET_NO, 84, T1.FUTURE_KIND_ID, T1.PRICE_MIN, T1.PRICE_MAX, T1.CURRENCY_NO, T1.OPTION_TYPE, T1.PRICE_INTERVAL'   ||"
+            "       '   FROM  JC_TPRICEINTERVAL T1  WHERE T1.STOCK_TYPE = 11';  "
+            "  FOR v_row IN (SELECT MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL FROM jc_tpriceinterval t WHERE t.stock_type=4) LOOP "
+            "          select count(*) into v_rowcount from jc_tpriceinterval a where a.market_no=v_row.market_no AND a.stock_type=56 AND a.future_kind_id=v_row.future_kind_id AND a.price_min=v_row.price_min AND a.price_max=v_row.price_max AND a.currency_no=v_row.currency_no AND a.option_type=v_row.option_type; "
+            "          if v_rowcount = 0 THEN "
+            "              INSERT INTO jc_tpriceinterval(MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL) VALUES(v_row.market_no,56,v_row.future_kind_id,v_row.price_min,v_row.price_max,v_row.currency_no,v_row.option_type,v_row.price_interval); "
+            "          end if; "
+            "          select count(*) into v_rowcount from jc_tpriceinterval a where a.market_no=v_row.market_no AND a.stock_type=65 AND a.future_kind_id=v_row.future_kind_id AND a.price_min=v_row.price_min AND a.price_max=v_row.price_max AND a.currency_no=v_row.currency_no AND a.option_type=v_row.option_type; "
+            "          if v_rowcount = 0 THEN "
+            "              INSERT INTO jc_tpriceinterval(MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL) VALUES(v_row.market_no,65,v_row.future_kind_id,v_row.price_min,v_row.price_max,v_row.currency_no,v_row.option_type,v_row.price_interval); "
+            "          end if; "
+            "          select count(*) into v_rowcount from jc_tpriceinterval a where a.market_no=v_row.market_no AND a.stock_type=74 AND a.future_kind_id=v_row.future_kind_id AND a.price_min=v_row.price_min AND a.price_max=v_row.price_max AND a.currency_no=v_row.currency_no AND a.option_type=v_row.option_type; "
+            "          if v_rowcount = 0 THEN "
+            "              INSERT INTO jc_tpriceinterval(MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL) VALUES(v_row.market_no,74,v_row.future_kind_id,v_row.price_min,v_row.price_max,v_row.currency_no,v_row.option_type,v_row.price_interval); "
+            "          end if; "
+            "  END LOOP; "
+            "       "
+            "  FOR v_row IN (SELECT MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL FROM jc_tpriceinterval t WHERE t.stock_type=5) LOOP "
+            "          select count(*) into v_rowcount from jc_tpriceinterval a where a.market_no=v_row.market_no AND a.stock_type=94 AND a.future_kind_id=v_row.future_kind_id AND a.price_min=v_row.price_min AND a.price_max=v_row.price_max AND a.currency_no=v_row.currency_no AND a.option_type=v_row.option_type; "
+            "          if v_rowcount = 0 THEN "
+            "              INSERT INTO jc_tpriceinterval(MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL) VALUES(v_row.market_no,94,v_row.future_kind_id,v_row.price_min,v_row.price_max,v_row.currency_no,v_row.option_type,v_row.price_interval); "
+            "          end if; "
+            "          select count(*) into v_rowcount from jc_tpriceinterval a where a.market_no=v_row.market_no AND a.stock_type=95 AND a.future_kind_id=v_row.future_kind_id AND a.price_min=v_row.price_min AND a.price_max=v_row.price_max AND a.currency_no=v_row.currency_no AND a.option_type=v_row.option_type; "
+            "          if v_rowcount = 0 THEN "
+            "              INSERT INTO jc_tpriceinterval(MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL) VALUES(v_row.market_no,95,v_row.future_kind_id,v_row.price_min,v_row.price_max,v_row.currency_no,v_row.option_type,v_row.price_interval); "
+            "          end if; "
+            "  END LOOP; "
+            "       "
+            "  FOR v_row IN (SELECT MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL FROM jc_tpriceinterval t WHERE t.stock_type=24) LOOP "
+            "          select count(*) into v_rowcount from jc_tpriceinterval a where a.market_no=v_row.market_no AND a.stock_type=56 AND a.future_kind_id=v_row.future_kind_id AND a.price_min=v_row.price_min AND a.price_max=v_row.price_max AND a.currency_no=v_row.currency_no AND a.option_type=v_row.option_type; "
+            "          if v_rowcount = 0 THEN "
+            "              INSERT INTO jc_tpriceinterval(MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL) VALUES(v_row.market_no,56,v_row.future_kind_id,v_row.price_min,v_row.price_max,v_row.currency_no,v_row.option_type,v_row.price_interval); "
+            "          end if; "
+            "          select count(*) into v_rowcount from jc_tpriceinterval a where a.market_no=v_row.market_no AND a.stock_type=62 AND a.future_kind_id=v_row.future_kind_id AND a.price_min=v_row.price_min AND a.price_max=v_row.price_max AND a.currency_no=v_row.currency_no AND a.option_type=v_row.option_type; "
+            "          if v_rowcount = 0 THEN "
+            "              INSERT INTO jc_tpriceinterval(MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL) VALUES(v_row.market_no,62,v_row.future_kind_id,v_row.price_min,v_row.price_max,v_row.currency_no,v_row.option_type,v_row.price_interval); "
+            "          end if; "
+            "          select count(*) into v_rowcount from jc_tpriceinterval a where a.market_no=v_row.market_no AND a.stock_type=74 AND a.future_kind_id=v_row.future_kind_id AND a.price_min=v_row.price_min AND a.price_max=v_row.price_max AND a.currency_no=v_row.currency_no AND a.option_type=v_row.option_type; "
+            "          if v_rowcount = 0 THEN "
+            "              INSERT INTO jc_tpriceinterval(MARKET_NO, STOCK_TYPE, FUTURE_KIND_ID, PRICE_MIN, PRICE_MAX, CURRENCY_NO, OPTION_TYPE, PRICE_INTERVAL) VALUES(v_row.market_no,74,v_row.future_kind_id,v_row.price_min,v_row.price_max,v_row.currency_no,v_row.option_type,v_row.price_interval); "
+            "          end if; "
+            "  END LOOP; "
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

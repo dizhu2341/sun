@@ -1,0 +1,4 @@
+decryptcsv : decryptcsv.o
+	g++ -o $(HOME)/workspace/bin/decryptcsv decryptcsv.o
+decryptcsv.o : decryptcsv.cpp decryptcsv.h
+	g++ -c decryptcsv.cpp

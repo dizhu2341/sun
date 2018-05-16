@@ -1,0 +1,61 @@
+#oracle版本
+export ORA_VER=10
+
+#基础原子服务
+cd s_jc_public
+make -f makefile.gcc
+cd ../cloud_dlog
+make -f writedlog.gcc
+cd ../s_msginterface
+make -f makefile.gcc
+cd ../service_init
+make -f makefile.gcc
+cd ../mc2_topic_api
+make -f makefile.gcc
+cd ../s_uftinit
+make -f makefile.gcc
+cd ../s_uftinitmgr
+make -f makefile.gcc
+cd ../s_o4initmgr
+make -f makefile.gcc
+cd ../s_as_o4datasync
+make -f makefile.gcc
+cd ../jc_finger
+make
+cd ..
+
+make -f s_as_jc_syspubflow.gcc
+make -f s_as_jc_publicflow.gcc
+make -f s_as_jc_wbpubflow.gcc
+make -f s_as_jc_dataloadflow.gcc
+make -f s_as_jc_rightsmanageflow.gcc
+make -f s_as_jc_tranflow.gcc
+make -f s_as_jc_o4initflow.gcc
+make -f s_as_jc_o4rjflow.gcc
+make -f s_as_jc_ufthelperflow.gcc
+make -f s_as_jc_sysparamflow.gcc
+make -f s_as_jc_mcflow.gcc
+make -f s_as_jc_hgpubflow.gcc
+make -f s_as_jc_dictionaryflow.gcc
+make -f s_as_jc_syspubflow.gcc
+make -f s_as_jc_tradecenterflow.gcc
+make -f s_as_jc_layoutflow.gcc
+
+cd s_as_o4rjdatasync
+make -f makefile.gcc
+cd ..
+
+#基础逻辑服务
+make -f s_ls_jc_syspubflow.gcc
+make -f s_ls_jc_dataloadflow.gcc
+make -f s_ls_jc_operatorlogflow.gcc
+make -f s_ls_jc_rightsmanageflow.gcc
+make -f s_ls_jc_tranflow.gcc
+make -f s_ls_jc_o4initflow.gcc
+make -f s_ls_jc_sysparamflow.gcc
+make -f s_ls_jc_mcflow.gcc
+make -f s_ls_jc_hgpubflow.gcc
+make -f s_ls_jc_dictionaryflow.gcc
+make -f s_ls_jc_ufthelperflow.gcc
+make -f s_ls_jc_tradecenterflow.gcc
+make -f s_ls_jc_layoutflow.gcc 

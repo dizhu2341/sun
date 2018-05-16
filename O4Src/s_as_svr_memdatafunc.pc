@@ -1,0 +1,95 @@
+
+#include "s_as_svr_memdatafunc.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+EXEC SQL CONTEXT USE DEFAULT;
+//修订时间   交付项版本 修订单号   修订人     申请人   修改内容 修改原因     备注         
+//AF_内存数据库_查询信息
+int FUNCTION_CALL_MODE F990011(IAS2Context* lpContext,IF2UnPacker * lpInUnPacker,IF2Packer * lpOutPacker,IConnection * lpParentConn)
+{
+int iReturnCode = 0;
+//输入参数初始化
+char p_table_name[129] = {0};
+hs_strncpy(p_table_name,conversion((char *)lpInUnPacker->GetStr("table_name")),128);
+char p_column_str[513] = {0};
+hs_strncpy(p_column_str,conversion((char *)lpInUnPacker->GetStr("column_str")),512);
+char p_where_str[2049] = {0};
+hs_strncpy(p_where_str,conversion((char *)lpInUnPacker->GetStr("where_str")),2048);
+char v_error_info[1025] = {0};
+char v_error_pathinfo[513] = {0};
+int v_error_no = 0;
+int v_error_id = 0;
+char v_error_sysinfo[500] = {0};
+hs_strncpy(v_error_pathinfo,conversion((char *)lpInUnPacker->GetStr("error_pathinfo")),512);
+hs_strncat(v_error_pathinfo," -> F990011()",512);
+
+printf("tableName[%s] columnStr[%s] whereStr[%s] \n", p_table_name, p_column_str, p_where_str);
+
+iReturnCode = GetMdbData(lpContext, lpInUnPacker, lpOutPacker, &v_error_no, v_error_info, v_error_pathinfo);
+
+goto svr_end;
+svr_end:
+
+if (iReturnCode == OK_SUCCESS || iReturnCode == ERR_SYSWARNING)
+{
+}
+else
+{
+GetErrorInfo(lpContext, v_error_no, v_error_info);
+SystemErrorPacker(lpOutPacker,v_error_pathinfo,v_error_no,v_error_info);
+WriteSystemLog(lpContext,v_error_pathinfo,v_error_no,v_error_info,v_error_id,v_error_sysinfo);
+}
+return iReturnCode;
+}
+//AF_内存数据库_修改信息
+int FUNCTION_CALL_MODE F990012(IAS2Context* lpContext,IF2UnPacker * lpInUnPacker,IF2Packer * lpOutPacker,IConnection * lpParentConn)
+{
+int iReturnCode = 0;
+char v_error_info[1025] = {0};
+char v_error_pathinfo[513] = {0};
+int v_error_no = 0;
+int v_error_id = 0;
+char v_error_sysinfo[500] = {0};
+hs_strncpy(v_error_pathinfo,conversion((char *)lpInUnPacker->GetStr("error_pathinfo")),512);
+hs_strncat(v_error_pathinfo," -> F990012()",512);
+
+goto svr_end;
+svr_end:
+
+if (iReturnCode == OK_SUCCESS || iReturnCode == ERR_SYSWARNING)
+{
+}
+else
+{
+GetErrorInfo(lpContext, v_error_no, v_error_info);
+SystemErrorPacker(lpOutPacker,v_error_pathinfo,v_error_no,v_error_info);
+WriteSystemLog(lpContext,v_error_pathinfo,v_error_no,v_error_info,v_error_id,v_error_sysinfo);
+}
+return iReturnCode;
+}
+//AF_内存数据库_删除信息
+int FUNCTION_CALL_MODE F990013(IAS2Context* lpContext,IF2UnPacker * lpInUnPacker,IF2Packer * lpOutPacker,IConnection * lpParentConn)
+{
+int iReturnCode = 0;
+char v_error_info[1025] = {0};
+char v_error_pathinfo[513] = {0};
+int v_error_no = 0;
+int v_error_id = 0;
+char v_error_sysinfo[500] = {0};
+hs_strncpy(v_error_pathinfo,conversion((char *)lpInUnPacker->GetStr("error_pathinfo")),512);
+hs_strncat(v_error_pathinfo," -> F990013()",512);
+
+goto svr_end;
+svr_end:
+
+if (iReturnCode == OK_SUCCESS || iReturnCode == ERR_SYSWARNING)
+{
+}
+else
+{
+GetErrorInfo(lpContext, v_error_no, v_error_info);
+SystemErrorPacker(lpOutPacker,v_error_pathinfo,v_error_no,v_error_info);
+WriteSystemLog(lpContext,v_error_pathinfo,v_error_no,v_error_info,v_error_id,v_error_sysinfo);
+}
+return iReturnCode;
+}

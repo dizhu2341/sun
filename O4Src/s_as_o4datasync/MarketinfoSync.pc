@@ -1,0 +1,151 @@
+#include "MarketinfoSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CMarketinfoSync::CMarketinfoSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tmarketinfo");
+    strcpy(m_sSrcView, "VO4JC_MARKETINFO");
+    strcpy(m_sTmpTable, "sync_marketinfo");
+    strcpy(m_sDstTable, "jc_tmarketinfo");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CMarketinfoSync::~CMarketinfoSync()
+{
+}
+
+bool CMarketinfoSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct MarketinfoRecord
+    {
+        char market_no[BATCH_ROWS][2];
+        char tradeday_type[BATCH_ROWS][33];
+        char stop_trade_flag[BATCH_ROWS][2];
+        char currency_no[BATCH_ROWS][4];
+    } MarketinfoRecord;
+    MarketinfoRecord *lpMarketinfoRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpMarketinfoRecord = new MarketinfoRecord();
+    if (NULL == lpMarketinfoRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【MarketinfoRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpMarketinfoRecord, 0, sizeof (MarketinfoRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select market_no, tradeday_type, stop_trade_flag, currency_no 
+                    from VO4JC_MARKETINFO;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpMarketinfoRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpMarketinfoRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpMarketinfoRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_marketinfo(market_no, tradeday_type, stop_trade_flag, currency_no)
+             values(rtrim(:lpMarketinfoRecord->market_no),
+										rtrim(:lpMarketinfoRecord->tradeday_type),
+										rtrim(:lpMarketinfoRecord->stop_trade_flag),
+										rtrim(:lpMarketinfoRecord->currency_no));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpMarketinfoRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpMarketinfoRecord;
+    return true;
+}
+
+bool CMarketinfoSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  V_INIT_DATE       NUMBER(8);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  SELECT INIT_DATE INTO V_INIT_DATE FROM JC_TSYSTEMINFO; "
+            "  EXECUTE IMMEDIATE 'UPDATE '|| V_TABLE_NAME_O4 || ' T1 SET ' || "
+            "       '   (T1.TRADEDAY_TYPE_ID, T1.BUSINESS_DATE, T1.STOP_TRADE_FLAG, T1.DEFAULT_CURRENCY_NO) =  '    ||"
+            "       '   (SELECT SF_GET_TRADEDAY_TYPE_ID(T2.TRADEDAY_TYPE), '||V_INIT_DATE||', NVL(T2.STOP_TRADE_FLAG,'' ''), NVL(T2.CURRENCY_NO,''CNY'') FROM SYNC_MARKETINFO T2, JC_TCONVERTMARKETNO T3  '    ||"
+            "       '   WHERE T2.MARKET_NO = T3.MARKET_NO_SRC AND T1.MARKET_NO = T3.MARKET_NO) '    ||"
+            "       '   WHERE EXISTS(SELECT 1 FROM SYNC_MARKETINFO T2, JC_TCONVERTMARKETNO T3 '    ||"
+            "       '   WHERE T2.MARKET_NO = T3.MARKET_NO_SRC AND T1.MARKET_NO = T3.MARKET_NO) ';  "
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    if (!RecoverTableIndex())
+        return false;
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

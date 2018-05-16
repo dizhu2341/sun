@@ -1,0 +1,202 @@
+#include "SelfbankaccountSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CSelfbankaccountSync::CSelfbankaccountSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tselfbankaccount");
+    strcpy(m_sSrcView, "VO4JC_SELFBANKACCOUNT");
+    strcpy(m_sTmpTable, "sync_selfbankaccount");
+    strcpy(m_sDstTable, "jc_tselfbankaccount");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CSelfbankaccountSync::~CSelfbankaccountSync()
+{
+}
+
+bool CSelfbankaccountSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct SelfbankaccountRecord
+    {
+        int account_id[BATCH_ROWS];
+        char bank_account[BATCH_ROWS][121];
+        char bank_no[BATCH_ROWS][129];
+        char subbank_no[BATCH_ROWS][129];
+        char bank_name[BATCH_ROWS][201];
+        char account_name[BATCH_ROWS][201];
+        char pay_no[BATCH_ROWS][129];
+        char intrabank_no[BATCH_ROWS][129];
+        char province_code[BATCH_ROWS][3];
+        char city_no[BATCH_ROWS][5];
+        char actual_account[BATCH_ROWS][2];
+        char account_type[BATCH_ROWS][2];
+        char account_manage_type[BATCH_ROWS][2];
+        char margin_account[BATCH_ROWS][129];
+        char dvp_flag[BATCH_ROWS][2];
+        char account_status[BATCH_ROWS][2];
+        int parent_account_id[BATCH_ROWS];
+        int open_date[BATCH_ROWS];
+        int close_date[BATCH_ROWS];
+        char bank_linkman[BATCH_ROWS][129];
+        char bank_phone[BATCH_ROWS][129];
+        char bank_fax[BATCH_ROWS][129];
+        char fund_ids[BATCH_ROWS][4001];
+        char asset_ids[BATCH_ROWS][4001];
+        int receive_dvp_id[BATCH_ROWS];
+        char bankmarket_reserve[BATCH_ROWS][2];
+        char used_fund_ids[BATCH_ROWS][4001];
+        char used_asset_ids[BATCH_ROWS][4001];
+        char yzzzdm[BATCH_ROWS][129];
+        char bank_liquidate[BATCH_ROWS][2];
+    } SelfbankaccountRecord;
+    SelfbankaccountRecord *lpSelfbankaccountRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpSelfbankaccountRecord = new SelfbankaccountRecord();
+    if (NULL == lpSelfbankaccountRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【SelfbankaccountRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpSelfbankaccountRecord, 0, sizeof (SelfbankaccountRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select account_id, bank_account, bank_no, subbank_no, bank_name, account_name, pay_no, intrabank_no, province_code, city_no, actual_account, account_type, account_manage_type, 
+                    margin_account, dvp_flag, account_status, parent_account_id, open_date, close_date, bank_linkman, bank_phone, bank_fax, fund_ids, asset_ids, receive_dvp_id, bankmarket_reserve, used_fund_ids, used_asset_ids, yzzzdm, bank_liquidate
+                    from VO4JC_SELFBANKACCOUNT;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpSelfbankaccountRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpSelfbankaccountRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpSelfbankaccountRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_selfbankaccount(account_id, bank_account, bank_no, subbank_no, bank_name, account_name, pay_no, intrabank_no, province_code, city_no, actual_account, account_type, account_manage_type, margin_account, dvp_flag, account_status, parent_account_id, open_date, close_date, bank_linkman, bank_phone, bank_fax, fund_ids, asset_ids, receive_dvp_id, bankmarket_reserve, used_fund_ids, used_asset_ids, yzzzdm, bank_liquidate)
+             values(:lpSelfbankaccountRecord->account_id,
+										rtrim(:lpSelfbankaccountRecord->bank_account),
+										rtrim(:lpSelfbankaccountRecord->bank_no),
+										rtrim(:lpSelfbankaccountRecord->subbank_no),
+										rtrim(:lpSelfbankaccountRecord->bank_name),
+										rtrim(:lpSelfbankaccountRecord->account_name),
+										rtrim(:lpSelfbankaccountRecord->pay_no),
+										rtrim(:lpSelfbankaccountRecord->intrabank_no),
+										rtrim(:lpSelfbankaccountRecord->province_code),
+										rtrim(:lpSelfbankaccountRecord->city_no),
+										rtrim(:lpSelfbankaccountRecord->actual_account),
+										rtrim(:lpSelfbankaccountRecord->account_type),
+										rtrim(:lpSelfbankaccountRecord->account_manage_type),
+										rtrim(:lpSelfbankaccountRecord->margin_account),
+										rtrim(:lpSelfbankaccountRecord->dvp_flag),
+										rtrim(:lpSelfbankaccountRecord->account_status),
+										:lpSelfbankaccountRecord->parent_account_id,
+										:lpSelfbankaccountRecord->open_date,
+										:lpSelfbankaccountRecord->close_date,
+										rtrim(:lpSelfbankaccountRecord->bank_linkman),
+										rtrim(:lpSelfbankaccountRecord->bank_phone),
+										rtrim(:lpSelfbankaccountRecord->bank_fax),
+										rtrim(:lpSelfbankaccountRecord->fund_ids),
+										rtrim(:lpSelfbankaccountRecord->asset_ids),
+										:lpSelfbankaccountRecord->receive_dvp_id,
+										rtrim(:lpSelfbankaccountRecord->bankmarket_reserve),
+										rtrim(:lpSelfbankaccountRecord->used_fund_ids),
+										rtrim(:lpSelfbankaccountRecord->used_asset_ids),
+										rtrim(:lpSelfbankaccountRecord->yzzzdm),
+										rtrim(:lpSelfbankaccountRecord->bank_liquidate));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpSelfbankaccountRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpSelfbankaccountRecord;
+    return true;
+}
+
+bool CSelfbankaccountSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+    if (!DropTableIndex())
+        return false;
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "   '   SELF_ACCOUNT_ID,BANK_ACCOUNT,BANK_NO,SUB_BANK_NO,BANK_NAME,BANK_ACCOUNT_NAME,PAY_NO,INTRABANK_NO,PROVINCECODE1,CITY_NO,BANK_ACCOUNT_FLAG,'   ||"
+            "   '   BANK_ACCOUNT_TYPE,ACCOUNT_MANAGE_TYPE,MARGIN_ACCOUNT,DVP_FLAG,BANK_ACCOUNT_STATUS,PARENT_ACCOUNT_ID,OPEN_DATE,CLOSE_DATE,BANK_LINKMAN,'   ||"
+            "   '   BANK_PHONE,BANK_FAX,FUND_ID_LIST,ASSET_ID_LIST,RECEIVE_DVP_ID,BANKMARKET_RESERVE,USED_FUND_ID_LIST,USED_ASSET_ID_LIST,YZZZ_CODE,BANK_LIQ_ACCOUNT)'   ||"
+            "   '   SELECT T1.ACCOUNT_ID, NVL(T1.BANK_ACCOUNT,'' ''), NVL(T1.BANK_NO,'' ''), NVL(T1.SUBBANK_NO,'' ''), NVL(T1.BANK_NAME,'' ''), NVL(T1.ACCOUNT_NAME,'' ''), NVL(T1.PAY_NO,'' ''), NVL(T1.INTRABANK_NO,'' ''), NVL(T1.PROVINCE_CODE,'' ''), NVL(T1.CITY_NO,'' ''), NVL(T1.ACTUAL_ACCOUNT,'' ''), NVL(T1.ACCOUNT_TYPE,'' ''), '  ||"
+            "   '   NVL(T1.ACCOUNT_MANAGE_TYPE,'' ''),NVL(T1.MARGIN_ACCOUNT,'' ''), NVL(T1.DVP_FLAG,'' ''), NVL(T1.ACCOUNT_STATUS,'' ''), T1.PARENT_ACCOUNT_ID, T1.OPEN_DATE, T1.CLOSE_DATE, NVL(T1.BANK_LINKMAN,'' ''), NVL(T1.BANK_PHONE,'' ''), NVL(T1.BANK_FAX,'' ''), NVL(T1.FUND_IDS,'' ''), '  ||"
+            "   '   NVL(T1.ASSET_IDS,'' ''), T1.RECEIVE_DVP_ID, NVL(T1.BANKMARKET_RESERVE,'' ''), NVL(T1.USED_FUND_IDS,'' ''), NVL(T1.USED_ASSET_IDS,'' ''), NVL(T1.YZZZDM,'' ''), NVL(T1.BANK_LIQUIDATE,'' '') '   ||"
+            "   '   FROM   SYNC_SELFBANKACCOUNT T1';   "
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

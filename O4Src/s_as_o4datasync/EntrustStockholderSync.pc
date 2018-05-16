@@ -1,0 +1,161 @@
+#include "EntrustStockholderSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CEntrustStockholderSync::CEntrustStockholderSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tentruststockholder");
+    strcpy(m_sSrcView, "VO4JC_ENTRUSTSTOCKHOLDER");
+    strcpy(m_sTmpTable, "sync_entruststockholder");
+    strcpy(m_sDstTable, "jc_tentruststockholder");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CEntrustStockholderSync::~CEntrustStockholderSync()
+{
+
+}
+
+bool CEntrustStockholderSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    //声明结构体变量
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+
+    typedef struct EntrustStockholderRecord
+    {
+        int fund_id[BATCH_ROWS];
+        int combi_id[BATCH_ROWS];
+        char market_no[BATCH_ROWS][2];
+        char stockholder_id[BATCH_ROWS][21];
+        char default_flag[BATCH_ROWS][2];
+    } EntrustStockholderRecord;
+    EntrustStockholderRecord *lpEntrustStockholderRecord;
+    EXEC SQL END DECLARE SECTION;
+    lpEntrustStockholderRecord = new EntrustStockholderRecord();
+    if (NULL == lpEntrustStockholderRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【EntrustStockholderRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpEntrustStockholderRecord, 0, sizeof (lpEntrustStockholderRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR  
+            SELECT FUND_ID,COMBI_ID,MARKET_NO,STOCKHOLDER_ID,DEFAULT_FLAG
+            FROM VO4JC_ENTRUSTSTOCKHOLDER;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpEntrustStockholderRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpEntrustStockholderRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpEntrustStockholderRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+            insert into sync_entruststockholder(
+                fund_id,combi_id,market_no,stockholder_id,default_flag
+            )
+            values(
+                :lpEntrustStockholderRecord->fund_id,
+                :lpEntrustStockholderRecord->combi_id,
+                rtrim(:lpEntrustStockholderRecord->market_no),
+                rtrim(:lpEntrustStockholderRecord->stockholder_id),
+                rtrim(:lpEntrustStockholderRecord->default_flag)
+            );
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpEntrustStockholderRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    delete lpEntrustStockholderRecord;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    return true;
+}
+
+bool CEntrustStockholderSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE "
+            "  V_TABLE_NAME      VARCHAR2(64); "
+            "BEGIN "
+            "  V_TABLE_NAME := '%s'; "
+            " "
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME; "
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME || '(' ||     "
+            "        ' FUND_ID,' ||   "
+            "        ' COMBI_ID,' ||   "
+            "        ' MARKET_NO,' ||   "
+            "        ' STOCKHOLDER_ID, default_flag)' ||   "
+            "        ' SELECT T1.FUND_ID,' ||   "
+            "        ' T1.COMBI_ID,' ||   "
+            "        ' T2.MARKET_NO,' ||   "
+            "        ' CASE WHEN T1.STOCKHOLDER_ID=''-1'' THEN ''*'' ELSE NVL(T1.STOCKHOLDER_ID, ''*'') END AS STOCKHOLDER_ID, T1.default_flag ' ||   "
+            "        ' FROM SYNC_ENTRUSTSTOCKHOLDER T1, JC_TCONVERTMARKETNO T2 ' ||   "
+            "        ' WHERE T1.MARKET_NO = T2.MARKET_NO_SRC' ; "
+            " "
+            "  COMMIT; "
+            "END; ", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+

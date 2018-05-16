@@ -1,0 +1,172 @@
+#include "InterestrateSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CInterestrateSync::CInterestrateSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tinterestrate");
+    strcpy(m_sSrcView, "VO4JC_INTERESTRATE");
+    strcpy(m_sTmpTable, "sync_interestrate");
+    strcpy(m_sDstTable, "jc_tinterestrate");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CInterestrateSync::~CInterestrateSync()
+{
+}
+
+bool CInterestrateSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct InterestrateRecord
+    {
+        double floating_balance[BATCH_ROWS];
+        char rate_status[BATCH_ROWS][2];
+        int rate_no[BATCH_ROWS];
+        char currency_no[BATCH_ROWS][4];
+        int fund_id[BATCH_ROWS];
+        int asset_id[BATCH_ROWS];
+        int rate_type[BATCH_ROWS];
+        char rate_name[BATCH_ROWS][33];
+        double year_rate[BATCH_ROWS];
+        double interest_days[BATCH_ROWS];
+        double day_rate[BATCH_ROWS];
+        double rate_tax_rate[BATCH_ROWS];
+        double min_reserve_balance[BATCH_ROWS];
+        double interest_fixed_amount[BATCH_ROWS];
+        char accrued_type[BATCH_ROWS][2];
+    } InterestrateRecord;
+    InterestrateRecord *lpInterestrateRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpInterestrateRecord = new InterestrateRecord();
+    if (NULL == lpInterestrateRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【InterestrateRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpInterestrateRecord, 0, sizeof (InterestrateRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select floating_balance, rate_status, rate_no, currency_no, fund_id, asset_id, rate_type, rate_name, year_rate, interest_days, day_rate, rate_tax_rate, min_reserve_balance, interest_fixed_amount,accrued_type  
+                    from VO4JC_INTERESTRATE;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpInterestrateRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpInterestrateRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpInterestrateRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_interestrate(floating_balance, rate_status, rate_no, currency_no, fund_id, asset_id, rate_type, rate_name, year_rate, interest_days, day_rate, rate_tax_rate, min_reserve_balance,interest_fixed_amount,accrued_type)
+             values(:lpInterestrateRecord->floating_balance,
+										rtrim(:lpInterestrateRecord->rate_status),
+										:lpInterestrateRecord->rate_no,
+										rtrim(:lpInterestrateRecord->currency_no),
+										:lpInterestrateRecord->fund_id,
+										:lpInterestrateRecord->asset_id,
+										:lpInterestrateRecord->rate_type,
+										rtrim(:lpInterestrateRecord->rate_name),
+										:lpInterestrateRecord->year_rate,
+										:lpInterestrateRecord->interest_days,
+										:lpInterestrateRecord->day_rate,
+										:lpInterestrateRecord->rate_tax_rate,
+										:lpInterestrateRecord->min_reserve_balance,
+                                        :lpInterestrateRecord->interest_fixed_amount,
+                                        rtrim(:lpInterestrateRecord->accrued_type));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpInterestrateRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpInterestrateRecord;
+    return true;
+}
+
+bool CInterestrateSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+    if (!DropTableIndex())
+        return false;
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  V_INIT_DATE       NUMBER(8);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  SELECT INIT_DATE INTO V_INIT_DATE FROM JC_TSYSTEMINFO;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "   '   SYS_DATE,RATE_NO,SETTLE_CURRENCY_NO,FUND_ID,ASSET_ID,RATE_TYPE,RATE_NAME,YEAR_RATE,INTEREST_DAYS,'   ||"
+            "   '   DAY_RATE,INTEREST_TAX_RATE,MIN_RESERVE_BALANCE,FLOATING_BALANCE,RATE_STATUS,INTEREST_FIXED_AMOUNT,ACCRUED_TYPE)'   ||"
+            "   '   SELECT '||V_INIT_DATE||',T1.RATE_NO, NVL(T1.CURRENCY_NO,'' ''),T1.FUND_ID, T1.ASSET_ID,T1.RATE_TYPE, NVL(T1.RATE_NAME,'' ''), '   ||"
+            "   '   T1.YEAR_RATE, T1.INTEREST_DAYS, T1.DAY_RATE, T1.RATE_TAX_RATE, T1.MIN_RESERVE_BALANCE,T1.FLOATING_BALANCE,NVL(T1.RATE_STATUS,'' ''), T1.INTEREST_FIXED_AMOUNT, NVL(T1.ACCRUED_TYPE, '' '')  '   ||"
+            "   '   FROM SYNC_INTERESTRATE T1';   "
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

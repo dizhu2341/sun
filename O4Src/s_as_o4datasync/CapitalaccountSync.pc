@@ -1,0 +1,268 @@
+#include "CapitalaccountSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CCapitalaccountSync::CCapitalaccountSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tassetfcset");
+    strcpy(m_sSrcView, "VO4JC_ASSETFCSET");
+    strcpy(m_sTmpTable, "sync_capitalaccount");
+    strcpy(m_sDstTable, "jc_tcapitalaccount");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CCapitalaccountSync::~CCapitalaccountSync()
+{
+}
+
+bool CCapitalaccountSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;        
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        int nFetchRows;
+        //声明结构体变量
+
+        typedef struct CapitalaccountRecord
+        {
+            int asset_id[BATCH_ROWS];
+            int fund_id[BATCH_ROWS];
+            char capital_account_type[BATCH_ROWS][2];
+            int branch_id[BATCH_ROWS];
+            char capital_account[BATCH_ROWS][129];
+            char capital_password[BATCH_ROWS][33];
+            char fc_type[BATCH_ROWS][2];
+        } CapitalaccountRecord;
+        CapitalaccountRecord *lpCapitalaccountRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+       
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    if (NULL == o3Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O3数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select asset_id, fund_id, capital_account_type, branch_id, capital_account, capital_password, fc_type 
+        from VO4JC_ASSETFCSET;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);        
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+    
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }    
+     // 申请内存空间
+    lpCapitalaccountRecord =  new CapitalaccountRecord();
+    if (NULL == lpCapitalaccountRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【CapitalaccountRecord】失败", m_sDstTable);
+        return false;
+    }
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        memset(lpCapitalaccountRecord, 0, sizeof (CapitalaccountRecord));
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpCapitalaccountRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpCapitalaccountRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_capitalaccount(asset_id, fund_id, capital_account_type, branch_id, capital_account, capital_password, fc_type)
+             values(:lpCapitalaccountRecord->asset_id,
+                    :lpCapitalaccountRecord->fund_id,
+                    rtrim(:lpCapitalaccountRecord->capital_account_type),
+                    :lpCapitalaccountRecord->branch_id,
+                    rtrim(:lpCapitalaccountRecord->capital_account),
+                    rtrim(:lpCapitalaccountRecord->capital_password),
+                    rtrim(:lpCapitalaccountRecord->fc_type));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpCapitalaccountRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpCapitalaccountRecord;
+    return true;
+}
+
+bool CCapitalaccountSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+    
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    EXEC SQL CONTEXT USE :o4Ctx;
+    //导入资金账户表
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME      VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME || '(' ||   "
+            "        ' CAPITAL_ACCOUNT_ID,' ||  "
+            "        ' BALANCE_TYPE,' ||  "
+            "        ' BROKER_ID,' ||  "
+            "        ' BRANCH_ID,' ||  "
+            "        ' CAPITAL_ACCOUNT_NO,' ||  "
+            "        ' CAPITAL_PASSWORD)' ||  "
+            "        ' WITH V_CONVERT_BROKER AS' ||  "
+            "        ' (SELECT TCB.BROKER_ID, TSB.BRANCH_ID' ||  "
+            "        ' FROM JC_TSECURITIESBRANCH TSB, JC_TCONVERTBROKER TCB' ||  "
+            "        ' WHERE TCB.BROKER_NO = TSB.BROKER_NO),' ||  "
+            "        ' V_CONVERT_BALANCE_TYPE AS (' ||"
+            "        ' SELECT T1.ASSET_ID, T1.FC_TYPE, ''2'' BALANCE_TYPE' ||  "
+            "        '   FROM SYNC_CAPITALACCOUNT T1' ||  "
+            "        '  WHERE T1.FC_TYPE = ''2''' ||  "
+            "        ' UNION ALL' ||  "
+            "        ' SELECT T1.ASSET_ID,T1.FC_TYPE,' || "
+            "        '        CASE' ||  "
+            "        '          WHEN T2.CREDIT_ASSET_FLAG = ''1'' THEN' ||  "
+            "        '           ''3''' ||  "
+            "        '          WHEN T2.CREDIT_ASSET_FLAG = ''3'' THEN' ||  "
+            "        '           ''4''' ||  "
+            "        '          ELSE' ||  "
+            "        '           ''1''' ||  "
+            "        '        END BALANCE_TYPE' ||  "
+            "        '   FROM SYNC_CAPITALACCOUNT T1, JC_TASSET T2' ||  "
+            "        '  WHERE T1.FC_TYPE = ''1''' ||  "
+            "        '    AND T1.ASSET_ID = T2.ASSET_ID(+)' ||  "
+            "        ' )' ||  "             
+            "       '  SELECT distinct NVL(T4.CAPITAL_ACCOUNT_ID, 0) CAPITAL_ACCOUNT_ID,' ||"
+            "        ' NVL(T3.BALANCE_TYPE, '' '') BALANCE_TYPE,' ||  "
+            "        ' T2.BROKER_ID,' ||  "
+            "        ' T1.BRANCH_ID,' ||  "
+            "        ' NVL(T1.CAPITAL_ACCOUNT, '' '') CAPITAL_ACCOUNT,' || "
+            "        ' MAX(NVL(T1.CAPITAL_PASSWORD, '' '')) CAPITAL_PASSWORD' || "
+            "        ' FROM SYNC_CAPITALACCOUNT T1,V_CONVERT_BROKER T2,V_CONVERT_BALANCE_TYPE T3, JC_TBRANCHCAPTACCTINFO T4' ||"
+            "        ' WHERE T1.BRANCH_ID=T2.BRANCH_ID' || "
+            "        ' AND T1.ASSET_ID=T3.ASSET_ID' ||"
+            "        ' AND T1.FC_TYPE=T3.FC_TYPE' ||"
+            "        '  AND T1.BRANCH_ID = T4.BRANCH_ID' ||"
+            "       '   AND T1.CAPITAL_ACCOUNT = T4.CAPITAL_ACCOUNT_NO' ||"
+            "        ' GROUP BY T4.CAPITAL_ACCOUNT_ID, T2.BROKER_ID,T1.BRANCH_ID,T3.BALANCE_TYPE,T1.CAPITAL_ACCOUNT';"                               
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+
+    memset(sExecSql, 0, sizeof (sExecSql));
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【jc_tassetcaptacct】开始");
+    //导入数据到资金账号关系表
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME      VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME := 'jc_tassetcaptacct';"
+            ""
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME || '(' ||   "
+            "        ' ASSET_ID,' ||  "
+            "        ' BALANCE_TYPE,' ||  "
+            "        ' REPORT_TYPE,' ||  "
+            "        ' CAPITAL_ACCOUNT_ID)' ||  "
+            "        ' WITH V_CONVERT_BALANCE_TYPE AS (' ||"
+            "        ' SELECT T1.ASSET_ID, T1.FC_TYPE, ''2'' BALANCE_TYPE' ||  "
+            "        '   FROM SYNC_CAPITALACCOUNT T1' ||  "
+            "        '  WHERE T1.FC_TYPE = ''2''' ||  "
+            "        ' UNION ALL' ||  "
+            "        ' SELECT T1.ASSET_ID,T1.FC_TYPE,' || "
+            "        '        CASE' ||  "
+            "        '          WHEN T2.CREDIT_ASSET_FLAG = ''1'' THEN' ||  "
+            "        '           ''3''' ||  "
+            "        '          WHEN T2.CREDIT_ASSET_FLAG = ''3'' THEN' ||  "
+            "        '           ''4''' ||  "
+            "        '          ELSE' ||  "
+            "        '           ''1''' ||  "
+            "        '        END BALANCE_TYPE' ||  "
+            "        '   FROM SYNC_CAPITALACCOUNT T1, JC_TASSET T2' ||  "
+            "        '  WHERE T1.FC_TYPE = ''1''' ||  "
+            "        '    AND T1.ASSET_ID = T2.ASSET_ID(+)' ||  "
+            "        ' )' ||  "
+            "        ' SELECT T1.ASSET_ID,' ||  "
+            "        ' NVL(T2.BALANCE_TYPE, '' ''),' ||  "
+            "        ' ''2'' REPORT_TYPE,' ||  "
+            "        ' T3.CAPITAL_ACCOUNT_ID' || "
+            "        ' FROM SYNC_CAPITALACCOUNT T1,V_CONVERT_BALANCE_TYPE T2,JC_TCAPITALACCOUNT T3' ||"
+            "        ' WHERE T1.ASSET_ID=T2.ASSET_ID' ||"
+            "        ' AND T1.FC_TYPE=T2.FC_TYPE' ||"
+            "        ' AND T1.BRANCH_ID=T3.BRANCH_ID' ||"
+            "        ' AND T2.BALANCE_TYPE=T3.BALANCE_TYPE' ||"
+            "        ' AND NVL(T1.CAPITAL_ACCOUNT, '' '')=T3.CAPITAL_ACCOUNT_NO';"
+            "        "
+            "  EXECUTE IMMEDIATE 'insert into jc_tassetcaptacct(ASSET_ID,BALANCE_TYPE,REPORT_TYPE,CAPITAL_ACCOUNT_ID)(select asset_id,''1'' as balance_type,''1'' as report_type,0 as capital_account_id from jc_tasset asset where asset_id not in (select asset_id from jc_tassetcaptacct where balance_type = ''1''))';"
+            "  EXECUTE IMMEDIATE 'insert into jc_tassetcaptacct(ASSET_ID,BALANCE_TYPE,REPORT_TYPE,CAPITAL_ACCOUNT_ID)(select asset_id,''2'' as balance_type,''1'' as report_type,0 as capital_account_id from jc_tasset asset where asset_id not in (select asset_id from jc_tassetcaptacct where balance_type = ''2''))';"
+            "  EXECUTE IMMEDIATE 'insert into jc_tassetcaptacct(ASSET_ID,BALANCE_TYPE,REPORT_TYPE,CAPITAL_ACCOUNT_ID)(select asset_id,''3'' as balance_type,''1'' as report_type,0 as capital_account_id from jc_tasset asset where asset_id not in (select asset_id from jc_tassetcaptacct where balance_type = ''3''))';"
+            "  EXECUTE IMMEDIATE 'insert into jc_tassetcaptacct(ASSET_ID,BALANCE_TYPE,REPORT_TYPE,CAPITAL_ACCOUNT_ID)(select asset_id,''4'' as balance_type,''1'' as report_type,0 as capital_account_id from jc_tasset asset where asset_id not in (select asset_id from jc_tassetcaptacct where balance_type = ''4''))';"
+            "  "
+            "  COMMIT;"
+            "END;");
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【jc_tassetcaptacct】失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        EXEC SQL ROLLBACK;
+        return false;
+    }
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【jc_tassetcaptacct】完成");
+    return true;
+}
+
+

@@ -1,0 +1,6 @@
+;LIBRARY "fsc_arbmgr"
+EXPORTS
+    GetArbmgrInfo
+    GetArbmgrInstance
+    GetArbmgrDependSvr
+    ArbmgrInit

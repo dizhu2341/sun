@@ -1,0 +1,169 @@
+#include "BankaccountSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CBankaccountSync::CBankaccountSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tbankaccount");
+    strcpy(m_sSrcView, "VO4JC_BANKACCOUNT");
+    strcpy(m_sTmpTable, "sync_bankaccount");
+    strcpy(m_sDstTable, "jc_tbankaccount");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CBankaccountSync::~CBankaccountSync()
+{
+}
+
+bool CBankaccountSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct BankaccountRecord
+    {
+        char id[BATCH_ROWS][1025];
+        char busin_class[BATCH_ROWS][2];
+        char account[BATCH_ROWS][129];
+        char account_name[BATCH_ROWS][201];
+        char sub_type[BATCH_ROWS][4001];
+        char bank_name[BATCH_ROWS][129];
+        char pay_no[BATCH_ROWS][129];
+        char default_fundids[BATCH_ROWS][4001];
+        char intrabank_no[BATCH_ROWS][129];
+        char provincecode[BATCH_ROWS][3];
+        char city_no[BATCH_ROWS][5];
+        char bank_no[BATCH_ROWS][129];
+        char internal_flag[BATCH_ROWS][2];
+        int serial_no[BATCH_ROWS];
+        char trustee[BATCH_ROWS][2];
+    } BankaccountRecord;
+    BankaccountRecord *lpBankaccountRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpBankaccountRecord = new BankaccountRecord();
+    if (NULL == lpBankaccountRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【BankaccountRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpBankaccountRecord, 0, sizeof (BankaccountRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select id, busin_class, account, account_name, sub_type, bank_name, pay_no, default_fundids, intrabank_no, provincecode, city_no, bank_no, internal_flag, serial_no, trustee
+                    from VO4JC_BANKACCOUNT;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpBankaccountRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpBankaccountRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpBankaccountRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_bankaccount(id, busin_class, account, account_name, sub_type, bank_name, pay_no, default_fundids, intrabank_no, provincecode, city_no, bank_no, internal_flag, serial_no, trustee)
+             values(rtrim(:lpBankaccountRecord->id),
+										rtrim(:lpBankaccountRecord->busin_class),
+										rtrim(:lpBankaccountRecord->account),
+										rtrim(:lpBankaccountRecord->account_name),
+										rtrim(:lpBankaccountRecord->sub_type),
+										rtrim(:lpBankaccountRecord->bank_name),
+										rtrim(:lpBankaccountRecord->pay_no),
+										rtrim(:lpBankaccountRecord->default_fundids),
+										rtrim(:lpBankaccountRecord->intrabank_no),
+										rtrim(:lpBankaccountRecord->provincecode),
+										rtrim(:lpBankaccountRecord->city_no),
+										rtrim(:lpBankaccountRecord->bank_no),
+										rtrim(:lpBankaccountRecord->internal_flag),
+										:lpBankaccountRecord->serial_no,
+										rtrim(:lpBankaccountRecord->trustee));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpBankaccountRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpBankaccountRecord;
+    return true;
+}
+
+bool CBankaccountSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+    if (!DropTableIndex())
+        return false;
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "   '   ID,BUSIN_CLASS,BANK_ACCOUNT,VC_SUB_TYPE,BANK_NAME,BANK_ACCOUNT_NAME,PAY_NO,DEFAULT_FUNDIDS,'   ||"
+            "   '   INTRABANK_NO,PROVINCECODE2,CITY_NO,BANK_ID,INTERNAL_BANKACCOUNT,SERIAL_NO,TRUSTEE)'   ||"
+            "   '   SELECT NVL(T1.ID,'' ''), NVL(T1.BUSIN_CLASS,'' ''), NVL(T1.ACCOUNT,'' ''),  NVL(T1.SUB_TYPE,'' ''), NVL(T1.BANK_NAME,'' ''), NVL(T1.ACCOUNT_NAME,'' ''),NVL(T1.PAY_NO,'' ''), NVL(T1.DEFAULT_FUNDIDS,'' ''),'   ||"
+            "   '   NVL(T1.INTRABANK_NO,'' ''), NVL(T1.PROVINCECODE,'' ''), NVL(T1.CITY_NO,'' ''), T1.BANK_NO, NVL(T1.INTERNAL_FLAG,''1''), T1.SERIAL_NO, NVL(T1.TRUSTEE,'' '') '   ||"
+            "   '   FROM SYNC_BANKACCOUNT T1';   "
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

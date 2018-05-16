@@ -1,0 +1,314 @@
+#include "Stockbusiness_qh.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CStockBusinessQh::CStockBusinessQh(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tstockbusiness");
+    strcpy(m_sSrcView,  "vo4jc_ftrstockbusiness");
+    strcpy(m_sTmpTable, "sync_stockbusiness_qh");
+    strcpy(m_sDstTable, "uft_tstockbusiness_qh");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CStockBusinessQh::~CStockBusinessQh()
+{}
+
+bool CStockBusinessQh::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        int nFetchRows;
+       
+        typedef struct StockBusinessQhRecord
+        {
+            int business_date[BATCH_ROWS];
+            int busin_no[BATCH_ROWS];
+            int company_id[BATCH_ROWS];
+            int fund_id[BATCH_ROWS];//                       number(8,0)    DEFAULT 0       NOT NULL   , 
+            int asset_id[BATCH_ROWS];//                      number(10,0)   DEFAULT 0       NOT NULL   , 
+            int combi_id[BATCH_ROWS];//                      number(10,0)   DEFAULT 0       NOT NULL   , 
+            char stockholder_id[BATCH_ROWS][21];//                varchar2(20)   DEFAULT '' ''   NOT NULL   ,  
+            char invest_type[BATCH_ROWS][2];//                   char(1)        DEFAULT '' ''   NOT NULL   , 
+            char position_type[BATCH_ROWS][2];//                 char(1)        DEFAULT '' ''   NOT NULL   , 
+            int market_no[BATCH_ROWS];//                     number(8,0)    DEFAULT 0       NOT NULL   , 
+            char report_code[BATCH_ROWS][33];//                   varchar2(32)   DEFAULT '' ''   NOT NULL   , 
+            char busin_op_flag[BATCH_ROWS][4];//                 varchar2(3)    DEFAULT '' ''   NOT NULL   , 
+            double occur_amount[BATCH_ROWS];//                  number(20,4)   DEFAULT 0       NOT NULL   , 
+            int operate_enable_date[BATCH_ROWS];//           number(8,0)    DEFAULT 0       NOT NULL   , 
+            int enable_point[BATCH_ROWS];//                  number(8,0)    DEFAULT 0       NOT NULL   , 
+            int expire_date[BATCH_ROWS];//                   number(8,0)    DEFAULT 0       NOT NULL   , 
+            int expire_point[BATCH_ROWS];//                  number(8,0)    DEFAULT 0       NOT NULL   , 
+            double carryover_cost[BATCH_ROWS];//                number(18,2)   DEFAULT 0       NOT NULL   , 
+            double original_cost[BATCH_ROWS];//                 number(18,2)   DEFAULT 0       NOT NULL   ,           
+            double carryover_profit[BATCH_ROWS];//              number(18,2)   DEFAULT 0       NOT NULL   , 
+            double original_profit[BATCH_ROWS];//               number(18,2)   DEFAULT 0       NOT NULL   , 
+            int open_holder_date[BATCH_ROWS];
+            char deal_no[BATCH_ROWS][65];           
+            double open_position_price[BATCH_ROWS];
+            int open_time[BATCH_ROWS];
+            int operator_no[BATCH_ROWS];//                   number(8,0)    DEFAULT 0       NOT NULL   , 
+            int occur_time[BATCH_ROWS];//                    number(6,0)    DEFAULT 0       NOT NULL     
+        } StockBusinessQhRecord;
+        StockBusinessQhRecord * lpStockBusinessQhRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+    
+    // 从O3视图读取数据放入到游标
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+   
+    sql_context O3DbContext = m_lpO3Conn->getSQLContext(); // 获取O3数据库连接句柄
+    EXEC SQL CONTEXT USE :O3DbContext;
+    EXEC SQL DECLARE RESULT CURSOR FOR 
+        select
+            business_date, 
+            busin_no, 
+            company_id, 
+            fund_id, 
+            asset_id, 
+            combi_id, 
+            stockholder_id, 
+            invest_type, 
+            position_type, 
+            market_no, 
+            report_code, 
+            busin_op_flag, 
+            occur_amount, 
+            operate_enable_date, 
+            enable_point, 
+            expire_date, 
+            expire_point, 
+            carryover_cost, 
+            original_cost, 
+            carryover_profit, 
+            original_profit, 
+            open_holder_date,
+            deal_no,          
+            open_position_price,
+            open_time,
+            operator_no, 
+            occur_time
+        from vo4jc_ftrstockbusiness;
+    EXEC SQL OPEN RESULT;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+    
+    // 申请内存空间
+    lpStockBusinessQhRecord =  new StockBusinessQhRecord();
+    if (NULL == lpStockBusinessQhRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【StockbusinessRecord】失败", m_sDstTable);
+        return false;
+    }
+    
+    // 获取O4数据连接句柄
+    sql_context O4DbContext = m_lpO4Conn->getSQLContext();
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 清空内存，并把游标里的结果集放入lpStockBusinessXhRecord指向的内存中，一次放入BATCH_ROWS行数据
+        memset(lpStockBusinessQhRecord, 0, sizeof (StockBusinessQhRecord));
+        EXEC SQL CONTEXT USE :O3DbContext;
+        EXEC SQL FETCH RESULT into :lpStockBusinessQhRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpStockBusinessQhRecord;
+            return false;
+        }
+        
+        // 如果是最后一次循环，那么nFetchRows就等于m_nRemainRows行数据，m_nRemainRows小于等于BATCH_ROWS
+        // 如果不是最后一次循环，那么nFetchRows就等于m_nBatchRows=BATCH_ROWS行数据
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+        
+        // 把lpStockBusinessXhRecord指向的内存里的数据导入到中间表
+        EXEC SQL CONTEXT USE :O4DbContext;
+        EXEC SQL for :nFetchRows
+            insert into sync_stockbusiness_qh(
+                business_date, 
+                busin_no, 
+                company_id, 
+                fund_id, 
+                asset_id, 
+                combi_id, 
+                stockholder_id, 
+                invest_type, 
+                position_type, 
+                market_no, 
+                report_code, 
+                busin_op_flag, 
+                occur_amount, 
+                operate_enable_date, 
+                enable_point, 
+                expire_date, 
+                expire_point, 
+                carryover_cost, 
+                original_cost,               
+                carryover_profit, 
+                original_profit, 
+                 open_holder_date,
+                deal_no,              
+                open_position_price,
+                open_time,
+                operator_no, 
+                occur_time)
+            values(
+                :lpStockBusinessQhRecord->business_date, 
+                :lpStockBusinessQhRecord->busin_no, 
+                :lpStockBusinessQhRecord->company_id, 
+                :lpStockBusinessQhRecord->fund_id, 
+                :lpStockBusinessQhRecord->asset_id, 
+                :lpStockBusinessQhRecord->combi_id, 
+                rtrim(:lpStockBusinessQhRecord->stockholder_id), 
+                rtrim(:lpStockBusinessQhRecord->invest_type), 
+                rtrim(:lpStockBusinessQhRecord->position_type), 
+                :lpStockBusinessQhRecord->market_no, 
+                rtrim(:lpStockBusinessQhRecord->report_code), 
+                rtrim(:lpStockBusinessQhRecord->busin_op_flag), 
+                :lpStockBusinessQhRecord->occur_amount, 
+                :lpStockBusinessQhRecord->operate_enable_date, 
+                :lpStockBusinessQhRecord->enable_point, 
+                :lpStockBusinessQhRecord->expire_date, 
+                :lpStockBusinessQhRecord->expire_point, 
+                :lpStockBusinessQhRecord->carryover_cost, 
+                :lpStockBusinessQhRecord->original_cost,               
+                :lpStockBusinessQhRecord->carryover_profit, 
+                :lpStockBusinessQhRecord->original_profit, 
+                :lpStockBusinessQhRecord->open_holder_date,
+                :lpStockBusinessQhRecord->deal_no,              
+                :lpStockBusinessQhRecord->open_position_price,
+                :lpStockBusinessQhRecord->open_time,
+                :lpStockBusinessQhRecord->operator_no, 
+                :lpStockBusinessQhRecord->occur_time);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpStockBusinessQhRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+    
+    EXEC SQL CONTEXT USE :O3DbContext;
+    EXEC SQL CLOSE RESULT;
+    delete lpStockBusinessQhRecord;
+    
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    return true;
+}
+
+bool CStockBusinessQh::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+        char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    // 删除O4表的主键和索引
+    if (!DropTableIndex())
+    {
+        return false;
+    }
+    
+    // 获取O4数据库的连接句柄
+    sql_context O4DbContext = m_lpO4Conn->getSQLContext();
+    EXEC SQL CONTEXT USE :O4DbContext;
+    sprintf(sExecSql, 
+            "DECLARE"
+            "   V_O4_TEMP_TABLE_NAME    VARCHAR2(64);"
+            "   V_O4_TABLE_NAME         VARCHAR2(64);"
+            "BEGIN"
+            "   V_O4_TEMP_TABLE_NAME := '%s';"
+            "   V_O4_TABLE_NAME  := '%s';"
+            ""
+            // 清空O4表数据，并把水位清零
+            "   EXECUTE IMMEDIATE 'truncate table ' || V_O4_TABLE_NAME;"
+            // 把中间表数据导入到O4表
+            "   EXECUTE IMMEDIATE   'INSERT INTO '|| V_O4_TABLE_NAME || '(' || "
+            "                            'business_date, ' || "               
+"                            'busin_no, ' || "                    
+"                            'company_id, ' || "                  
+"                            'fund_id, ' || "                     
+"                            'asset_id, ' || "                    
+"                            'combi_id, ' || "                    
+"                            'stockholder_id, ' || "              
+"                            'invest_type, ' || "                 
+"                            'position_type, ' || "               
+"                            'market_no, ' || "                   
+"                            'report_code, ' || "                 
+"                            'busin_op_flag, ' || "               
+"                            'occur_amount, ' || "                
+"                            'operate_enable_date, ' || "         
+"                            'enable_point, ' || "                
+"                            'expire_date, ' || "                 
+"                            'expire_point, ' || "                
+"                            'carryover_cost, ' || "              
+"                            'original_cost, ' || "               
+"                            'carryover_profit, ' || "            
+"                            'original_profit, ' || "             
+"                            'open_holder_date, ' || "            
+"                            'deal_no, ' || "                          
+"                            'open_position_price, ' || "         
+"                            'open_time, ' || "                   
+"                            'operator_no, ' || "                 
+"                            'occur_time) ' || "                       
+            "                       ' SELECT ' ||"
+            "                            'business_date, ' || "               
+"                            'busin_no, ' || "                    
+"                            'company_id, ' || "                  
+"                            'fund_id, ' || "                     
+"                            'asset_id, ' || "                    
+"                            'combi_id, ' || "                    
+"                            'stockholder_id, ' || "              
+"                            'invest_type, ' || "                 
+"                            'position_type, ' || "               
+"                            'market_no, ' || "                   
+"                            'report_code, ' || "                 
+"                            'busin_op_flag, ' || "               
+"                            'occur_amount, ' || "                
+"                            'operate_enable_date, ' || "         
+"                            'enable_point, ' || "                
+"                            'expire_date, ' || "                 
+"                            'expire_point, ' || "                
+"                            'carryover_cost, ' || "              
+"                            'original_cost, ' || "               
+"                            'carryover_profit, ' || "            
+"                            'original_profit, ' || "             
+"                            'open_holder_date, ' || "            
+"                            'deal_no, ' || "                               
+"                            'open_position_price, ' || "         
+"                            'open_time, ' || "                   
+"                            'operator_no, ' || "                 
+"                            'occur_time ' || "                       
+            "                       ' FROM '|| V_O4_TEMP_TABLE_NAME;"
+            "   COMMIT;"
+            "END;",
+            m_sTmpTable, m_sDstTable);
+    
+    // 执行sql语句
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        // 重建O4表的主键和索引
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    // 重建O4表的主键和索引
+    if (!RecoverTableIndex())
+    {
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}

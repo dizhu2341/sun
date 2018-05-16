@@ -1,0 +1,290 @@
+#include "FundassetSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CFundassetSync::CFundassetSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tfundasset");
+    strcpy(m_sSrcView, "VO4JC_FUNDASSET");
+    strcpy(m_sTmpTable, "sync_fundasset");
+    strcpy(m_sDstTable, "hg_tfundasset");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CFundassetSync::~CFundassetSync()
+{
+}
+
+bool CFundassetSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        int nFetchRows;
+        //声明结构体变量
+
+        typedef struct FundassetRecord
+        {
+            int fund_id[BATCH_ROWS];//                number(8,0)                            , 
+            char currency_no[BATCH_ROWS][4];//            varchar2(3)                            , 
+            double net_value[BATCH_ROWS];//              number(18,2)                           , 
+            double nav[BATCH_ROWS];//                    number(18,4)                           , 
+            double yesterday_net_value[BATCH_ROWS];//    number(18,2)                           , 
+            double yesterday_nav[BATCH_ROWS];//          number(18,4)                           , 
+            double total_nav[BATCH_ROWS];//              number(18,4)                           , 
+            double total_value[BATCH_ROWS];//            number(18,2)                           , 
+            double fund_share[BATCH_ROWS];//             number(20,4)                           , 
+            int business_date[BATCH_ROWS];//          number(8,0)     DEFAULT 0   NOT NULL   , 
+            int company_id[BATCH_ROWS];//             number(10,0)    DEFAULT 0   NOT NULL   , 
+            double receivable[BATCH_ROWS];//             number(18,2)    DEFAULT 0   NOT NULL   , 
+            double payable[BATCH_ROWS];//                number(18,2)    DEFAULT 0   NOT NULL   , 
+            double unit_dividends[BATCH_ROWS];//         number(20,12)   DEFAULT 0   NOT NULL   , 
+            double total_unit_dividends[BATCH_ROWS];//   number(20,12)   DEFAULT 0   NOT NULL   , 
+            double stock_asset_value[BATCH_ROWS];//      number(18,2)    DEFAULT 0   NOT NULL   , 
+            double bond_asset[BATCH_ROWS];//             number(18,2)    DEFAULT 0   NOT NULL   , 
+            double fund_asset[BATCH_ROWS];//             number(18,2)    DEFAULT 0   NOT NULL   , 
+            double hg_asset[BATCH_ROWS];//               number(18,2)    DEFAULT 0   NOT NULL   , 
+            double warrant_asset[BATCH_ROWS];//          number(18,2)    DEFAULT 0   NOT NULL   , 
+            double other_asset[BATCH_ROWS];//            number(18,2)    DEFAULT 0   NOT NULL   , 
+            double futures_asset[BATCH_ROWS];//          number(18,2)    DEFAULT 0   NOT NULL   , 
+            double option_asset[BATCH_ROWS];//           number(18,2)    DEFAULT 0   NOT NULL   , 
+            double yield_rate_7days[BATCH_ROWS];//       number(15,8)    DEFAULT 0   NOT NULL   , 
+            double yield_10k_unit[BATCH_ROWS];//         number(15,8)    DEFAULT 0   NOT NULL   , 
+            double current_cash[BATCH_ROWS];//           number(18,2)    DEFAULT 0   NOT NULL     
+            double yesterday_total_value[BATCH_ROWS];
+        } FundassetRecord;
+        FundassetRecord *lpFundassetRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+   
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    if (NULL == o3Ctx)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，获取O3数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select 
+            fund_id, 
+            currency_no, 
+            net_value, 
+            nav, 
+            yesterday_net_value, 
+            yesterday_nav, 
+            total_nav, 
+            total_value, 
+            fund_share, 
+            business_date, 
+            company_id, 
+            receivable, 
+            payable, 
+            unit_dividends, 
+            total_unit_dividends, 
+            stock_asset_value, 
+            bond_asset, 
+            fund_asset, 
+            hg_asset, 
+            warrant_asset, 
+            other_asset, 
+            futures_asset, 
+            option_asset, 
+            yield_rate_7days, 
+            yield_10k_unit, 
+            current_cash,
+            yesterday_total_value
+        from VO4JC_FUNDASSET;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+   
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+     // 申请内存空间
+    lpFundassetRecord =  new FundassetRecord();
+    if (NULL == lpFundassetRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【FundassetRecord】失败", m_sDstTable);
+        return false;
+    }
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        memset(lpFundassetRecord, 0, sizeof (FundassetRecord));
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpFundassetRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFundassetRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_fundasset(
+                                        fund_id, 
+                                        currency_no, 
+                                        net_value, 
+                                        nav, 
+                                        yesterday_net_value, 
+                                        yesterday_nav, 
+                                        total_nav, 
+                                        total_value, 
+                                        fund_share, 
+                                        business_date, 
+                                        company_id, 
+                                        receivable, 
+                                        payable, 
+                                        unit_dividends, 
+                                        total_unit_dividends, 
+                                        stock_asset_value, 
+                                        bond_asset, 
+                                        fund_asset, 
+                                        hg_asset, 
+                                        warrant_asset, 
+                                        other_asset, 
+                                        futures_asset, 
+                                        option_asset, 
+                                        yield_rate_7days, 
+                                        yield_10k_unit, 
+                                        current_cash,
+                                        yesterday_total_value)
+             values(:lpFundassetRecord->fund_id, 
+                    rtrim(:lpFundassetRecord->currency_no), 
+                    :lpFundassetRecord->net_value, 
+                    :lpFundassetRecord->nav, 
+                    :lpFundassetRecord->yesterday_net_value, 
+                    :lpFundassetRecord->yesterday_nav, 
+                    :lpFundassetRecord->total_nav, 
+                    :lpFundassetRecord->total_value, 
+                    :lpFundassetRecord->fund_share, 
+                    :lpFundassetRecord->business_date, 
+                    :lpFundassetRecord->company_id, 
+                    :lpFundassetRecord->receivable, 
+                    :lpFundassetRecord->payable, 
+                    :lpFundassetRecord->unit_dividends, 
+                    :lpFundassetRecord->total_unit_dividends, 
+                    :lpFundassetRecord->stock_asset_value, 
+                    :lpFundassetRecord->bond_asset, 
+                    :lpFundassetRecord->fund_asset, 
+                    :lpFundassetRecord->hg_asset, 
+                    :lpFundassetRecord->warrant_asset, 
+                    :lpFundassetRecord->other_asset, 
+                    :lpFundassetRecord->futures_asset, 
+                    :lpFundassetRecord->option_asset, 
+                    :lpFundassetRecord->yield_rate_7days, 
+                    :lpFundassetRecord->yield_10k_unit, 
+                    :lpFundassetRecord->current_cash,
+                    :lpFundassetRecord->yesterday_total_value);
+										
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFundassetRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpFundassetRecord;
+    return true;
+}
+
+bool CFundassetSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "  '  FUND_ID, CURRENCY_NO, NET_VALUE, NAV, YESTERDAY_NET_VALUE, YESTERDAY_NAV, TOTAL_NAV, TOTAL_VALUE, '  ||"
+            "  '  FUND_SHARE, BUSINESS_DATE, COMPANY_ID, receivable,PAYABLE, UNIT_DIVIDENDS, TOTAL_UNIT_DIVIDENDS, STOCK_ASSET_VALUE, '  ||"
+            "  '  BOND_ASSET, FUND_ASSET, HG_ASSET, WARRANT_ASSET, OTHER_ASSET, FUTURES_ASSET, OPTION_ASSET, YIELD_RATE_7DAYS,YIELD_10K_UNIT, CURRENT_CASH, yesterday_total_value)' ||"
+            "  ' SELECT ' ||"
+            "  '   T1.FUND_ID, ' ||"
+            "  '   NVL(T1.CURRENCY_NO, ''CNY''), ' ||"
+            "   '   T1.NET_VALUE,' ||"
+            "   '   T1.NAV,' ||"
+            "   '   T1.YESTERDAY_NET_VALUE,' ||"           
+            "   '   T1.YESTERDAY_NAV,' ||"
+            "   '   T1.TOTAL_NAV,' ||"
+            "   '   T1.TOTAL_VALUE,' ||"
+            "   '   T1.FUND_SHARE,' ||"
+            "   '   T1.BUSINESS_DATE,' ||"
+            "   '   T1.COMPANY_ID,' ||"
+            "   '   T1.receivable,'||"
+            "   '   T1.PAYABLE,' ||"
+            "   '   T1.UNIT_DIVIDENDS,' ||"
+            "   '   T1.TOTAL_UNIT_DIVIDENDS,' ||"
+            "   '   T1.STOCK_ASSET_VALUE,' ||"
+            "   '   T1.BOND_ASSET,' ||"
+            "   '   T1.FUND_ASSET,' ||"
+            "   '   T1.HG_ASSET,' ||"
+            "   '   T1.WARRANT_ASSET,' ||"
+            "   '   T1.OTHER_ASSET,' ||"
+            "   '   T1.FUTURES_ASSET,' ||"
+            "   '   T1.OPTION_ASSET,' ||"
+            "   '   T1.YIELD_RATE_7DAYS,' ||"
+            "   '   T1.YIELD_10K_UNIT,' ||"
+            "   '   t1.CURRENT_CASH, ' ||"
+            "   '   t1.yesterday_total_value' ||"
+            "  '  FROM '||V_TABLE_NAME_TMP||' t1'; "
+            "  COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

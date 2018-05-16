@@ -1,0 +1,93 @@
+# *********************************************************************
+# Make文件注意：
+# 必须定义以下环境变量：
+#   windows: 
+#       ORACLE_HOME （例如：e:\oracle\ora10g）
+#       VC_HOME （例如：c:\program files\devstudio\vc\include）
+#   linux: 
+#       GCC_VER （例如：export GCC_VER = 3.2.3） 可以执行：g++ -v查找当前版本 }
+# 
+# 编译实例：
+#   windows: 
+#       执行版本:     nmake -fs_XXXXflow.mvc -D _DEBUG=1 ORA_VER=10  
+#   linux: 
+#       执行版本:       make -fs_XXXXflow.gcc ORA_VER=10  
+# 
+# *********************************************************************
+#obj扩展名定义$TO
+TO=o
+#文件扩展名定义
+EXT=cpp
+HEAD=h
+
+#要编译的组件名,构成组件的obj文件定义
+FC1 = uftinitmgr
+FC2 = monitor_manager
+FC3 = trade_center
+FC4 = thread
+FC5 = monitor_thread
+FC6 = s_libpublic
+FC7 = s_helper
+FC8 = s_glbfunction_or
+FC9 = s_jc_public
+FC10 = s_liblogpublic
+FC11 = writedlog
+OBJS1 =  $(FC1).$(TO) $(FC2).$(TO) $(FC3).$(TO) $(FC4).$(TO) $(FC5).$(TO)
+
+ifneq (,$(findstring solaris,$(OSTYPE)))
+OUTDIR = $(HOME)/appcom
+else
+OUTDIR = $(HOME)/appcom
+endif
+
+#CPP编译器
+CC = g++
+
+#(-Dxxx should be added to DEFS macro):
+DEFS =-D OS_UNIX
+
+
+#option 编译，连接选项
+CFLAGS = -c -fPIC $(DEFS)
+LDFLAGS = -shared
+STDLIBS = -lc -lnsl -ldl -lm -lstdc++ -lpthread
+LIBPATH=$(OUTDIR)
+DBLIB = -L$(ORACLE_HOME)/lib -lclntsh -L$(ORACLE_HOME)/lib  -lsql$(ORA_VER)
+HSLIB = -L$(OUTDIR) -l$(FC6) -l$(FC7) -l$(FC8) -l$(FC9) -l$(FC10) -l$(FC11)
+
+#头文件路径
+INCLALL =  -I $(HOME)/src  -I $(ORACLE_HOME)/precomp/public  -I $(ORACLE_HOME)/oci/include  -I $(FBASE_HOME)/ 
+
+#debug版本
+ifdef _DEBUG
+DEFS = -D_DEBUG
+CFLAGS = -c -g -fPIC $(DEFS)
+endif
+all:$(FC1)
+
+$(FC1):$(OBJS1)
+	 $(CC) $(LDFLAGS) $(OBJS1) $(HSLIB) -o$(OUTDIR)/libs_uftinitmgr.so $(LIBS) $(EXP)
+
+$(FC1).$(TO):$(FC1).$(EXT) $(FC1).$(HEAD)
+	$(CC) $(CFLAGS) $(FC1).$(EXT) $(INCLALL)
+
+$(FC2).$(TO):$(FC2).$(EXT) $(FC2).$(HEAD)
+	$(CC) $(CFLAGS) $(FC2).$(EXT) $(INCLALL)
+
+$(FC3).$(TO):$(FC3).$(EXT) $(FC3).$(HEAD)
+	$(CC) $(CFLAGS) $(FC3).$(EXT) $(INCLALL)
+
+$(FC4).$(TO):$(FC4).$(EXT) $(FC4).$(HEAD)
+	$(CC) $(CFLAGS) $(FC4).$(EXT) $(INCLALL)
+
+$(FC5).$(TO):$(FC5).$(EXT) $(FC5).$(HEAD)
+	$(CC) $(CFLAGS) $(FC5).$(EXT) $(INCLALL)
+
+cleanobj:
+	rm -fr *.o core *~ cxx_repository
+clean: cleanobj
+	rm -f $(OUTDIR)/$(ASPACK_DLL)
+doxygen:
+	doxygen doxygen.cfg
+	-del *.obj
+

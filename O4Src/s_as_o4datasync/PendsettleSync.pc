@@ -1,0 +1,335 @@
+#include "PendsettleSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CPendsettleSync::CPendsettleSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tpendsettle");
+    strcpy(m_sSrcView, "vo4jc_mktpendsettle");
+    strcpy(m_sTmpTable, "sync_pendsettle");
+    strcpy(m_sDstTable, "uft_tpendsettle");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CPendsettleSync::~CPendsettleSync()
+{
+}
+
+bool CPendsettleSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct PendsettleRecord
+    {
+        int business_date[BATCH_ROWS];//          number(8,0)     DEFAULT 0       NOT NULL   , 
+        int pendsettle_serial_no[BATCH_ROWS];//   number(10,0)    DEFAULT 0       NOT NULL   , 
+        int company_id[BATCH_ROWS];//             number(10,0)    DEFAULT 0       NOT NULL   , 
+        int fund_id[BATCH_ROWS];//                number(8,0)     DEFAULT 0       NOT NULL   , 
+        int asset_id[BATCH_ROWS];//               number(10,0)    DEFAULT 0       NOT NULL   , 
+        int combi_id[BATCH_ROWS];//               number(10,0)    DEFAULT 0       NOT NULL   , 
+        char balance_type[BATCH_ROWS][2];//           char(1)         DEFAULT '' ''   NOT NULL   , 
+        int capital_account_id[BATCH_ROWS];//     number(10,0)    DEFAULT 0       NOT NULL   , 
+        char stockholder_id[BATCH_ROWS][21];//         varchar2(20)    DEFAULT '' ''   NOT NULL   , 
+        char trade_seat[BATCH_ROWS][21];//             varchar2(20)    DEFAULT '' ''   NOT NULL   , 
+        char bind_seat[BATCH_ROWS][21];//              varchar2(20)    DEFAULT '' ''   NOT NULL   , 
+        char invest_type[BATCH_ROWS][2];//            char(1)         DEFAULT '' ''   NOT NULL   , 
+        char position_stock_type[BATCH_ROWS][2];//    char(1)         DEFAULT '' ''   NOT NULL   , 
+        int market_no[BATCH_ROWS];//              number(8,0)     DEFAULT 0       NOT NULL   , 
+        char position_type[BATCH_ROWS][2];//       char(1)         DEFAULT '' ''   NOT NULL   , 
+        char report_code[BATCH_ROWS][33];//            varchar2(32)    DEFAULT '' ''   NOT NULL   , 
+        int busin_flag[BATCH_ROWS];//             number(8,0)     DEFAULT 0       NOT NULL   , 
+        char settle_currency_no[BATCH_ROWS][4];//     varchar2(3)     DEFAULT '' ''   NOT NULL   , 
+        double deal_price[BATCH_ROWS];//             number(20,12)   DEFAULT 0       NOT NULL   ,     
+        int occur_date[BATCH_ROWS];//             number(8,0)     DEFAULT 0       NOT NULL   ,     
+        char deal_no[BATCH_ROWS][65];//                varchar2(64)    DEFAULT '' ''   NOT NULL   , 
+        char report_serial_no_str[BATCH_ROWS][65];//   varchar2(64)    DEFAULT '' ''   NOT NULL   , 
+        int trade_platform_id[BATCH_ROWS];//      number(10,0)    DEFAULT 0       NOT NULL   , 
+        int entrust_direction[BATCH_ROWS];//      number(3,0)     DEFAULT 0       NOT NULL     
+        double settle_amount[BATCH_ROWS];
+        double settle_balance[BATCH_ROWS];
+        int stock_settle_date[BATCH_ROWS];
+        int stock_settle_point[BATCH_ROWS];
+        char stock_settle_flag[BATCH_ROWS][2];
+        int cash_settle_date[BATCH_ROWS];
+        int cash_settle_point[BATCH_ROWS];
+        char cash_settle_flag[BATCH_ROWS][2];
+    } PendsettleRecord;
+    PendsettleRecord *lpPendsettleRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpPendsettleRecord =  new PendsettleRecord();
+    if (NULL == lpPendsettleRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【PendsettleRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpPendsettleRecord, 0, sizeof (PendsettleRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select
+            business_date,
+            pendsettle_serial_no,
+            company_id,
+            fund_id,
+            asset_id,
+            combi_id,
+            balance_type,
+            capital_account_id,
+            stockholder_id,
+            trade_seat,
+            bind_seat,
+            invest_type,
+            position_stock_type,
+            market_no,
+            position_type,
+            report_code,
+            busin_flag,
+            settle_currency_no,
+            deal_price,         
+            occur_date,         
+            deal_no,
+            report_serial_no_str,
+            trade_platform_id,
+            entrust_direction,
+            settle_amount,
+            settle_balance,
+            stock_settle_date,
+            stock_settle_point,
+            stock_settle_flag,
+            cash_settle_date,
+            cash_settle_point,
+            cash_settle_flag
+        from vo4jc_mktpendsettle;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpPendsettleRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpPendsettleRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpPendsettleRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_pendsettle(
+                    business_date,
+                    pendsettle_serial_no,
+                    company_id,
+                    fund_id,
+                    asset_id,
+                    combi_id,
+                    balance_type,
+                    capital_account_id,
+                    stockholder_id,
+                    trade_seat,
+                    bind_seat,
+                    invest_type,
+                    position_stock_type,
+                    market_no,
+                    position_type,
+                    report_code,
+                    busin_flag,
+                    settle_currency_no,
+                    deal_price,                  
+                    occur_date,                    
+                    deal_no,
+                    report_serial_no_str,
+                    trade_platform_id,
+                    entrust_direction,
+                    settle_amount,
+                    settle_balance,
+                    stock_settle_date,
+                    stock_settle_point,
+                    stock_settle_flag,
+                    cash_settle_date,
+                    cash_settle_point,
+                    cash_settle_flag)
+             values(               
+                    :lpPendsettleRecord->business_date,
+                    :lpPendsettleRecord->pendsettle_serial_no,
+                    :lpPendsettleRecord->company_id,
+                    :lpPendsettleRecord->fund_id,
+                    :lpPendsettleRecord->asset_id,
+                    :lpPendsettleRecord->combi_id,
+                    rtrim(:lpPendsettleRecord->balance_type),
+                    :lpPendsettleRecord->capital_account_id,
+                    rtrim(:lpPendsettleRecord->stockholder_id),
+                    rtrim(:lpPendsettleRecord->trade_seat),
+                    rtrim(:lpPendsettleRecord->bind_seat),
+                    rtrim(:lpPendsettleRecord->invest_type),
+                    rtrim(:lpPendsettleRecord->position_stock_type),
+                    :lpPendsettleRecord->market_no,
+                    rtrim(:lpPendsettleRecord->position_type),
+                    rtrim(:lpPendsettleRecord->report_code),
+                    :lpPendsettleRecord->busin_flag,
+                    rtrim(:lpPendsettleRecord->settle_currency_no),
+                    :lpPendsettleRecord->deal_price,                   
+                    :lpPendsettleRecord->occur_date,                  
+                    rtrim(:lpPendsettleRecord->deal_no),
+                    rtrim(:lpPendsettleRecord->report_serial_no_str),
+                    :lpPendsettleRecord->trade_platform_id,
+                    :lpPendsettleRecord->entrust_direction,
+                    :lpPendsettleRecord->settle_amount,
+                    :lpPendsettleRecord->settle_balance,
+                    :lpPendsettleRecord->stock_settle_date,
+                    :lpPendsettleRecord->stock_settle_point,
+                    rtrim(:lpPendsettleRecord->stock_settle_flag),
+                    :lpPendsettleRecord->cash_settle_date,
+                    :lpPendsettleRecord->cash_settle_point,
+                    rtrim(:lpPendsettleRecord->cash_settle_flag));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpPendsettleRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpPendsettleRecord;
+    return true;
+}
+
+bool CPendsettleSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       ' business_date, ' ||"
+            "       ' pendsettle_serial_no, ' ||"
+            "       ' company_id, ' ||"
+            "       ' fund_id, ' ||"
+            "       ' asset_id, ' ||"
+            "       ' combi_id, ' ||"
+            "       ' balance_type, ' ||"
+            "       ' capital_account_id, ' ||"
+            "       ' stockholder_id, ' ||"
+            "       ' trade_seat, ' ||"
+            "       ' bind_seat, ' ||"
+            "       ' invest_type, ' ||"
+            "       ' position_stock_type, ' ||"
+            "       ' market_no, ' ||"
+            "       ' position_type, ' ||"
+            "       ' report_code, ' ||"
+            "       ' busin_flag, ' ||"
+            "       ' settle_currency_no, ' ||"
+            "       ' deal_price, ' ||"        
+            "       ' occur_date, ' ||"         
+            "       ' deal_no, ' ||"
+            "       ' report_serial_no_str, ' ||"
+            "       ' trade_platform_id, ' ||"
+            "       ' entrust_direction, ' ||"
+            "		'settle_amount,' || "
+            "		'settle_balance,' || "
+            "		'stock_settle_date,' || "
+            "		'stock_settle_point,' || "
+            "		'stock_settle_flag, ' || "
+            "		'cash_settle_date,' || "
+            "		'cash_settle_point,' || "
+            "		'cash_settle_flag)  ' || "
+            "	' SELECT '|| "
+            "       ' business_date, ' ||"
+            "       ' pendsettle_serial_no, ' ||"
+            "       ' company_id, ' ||"
+            "       ' fund_id, ' ||"
+            "       ' asset_id, ' ||"
+            "       ' combi_id, ' ||"
+            "       ' nvl(balance_type, ''1''), ' ||"
+            "       ' capital_account_id, ' ||"
+            "       ' nvl(stockholder_id, '' ''), ' ||"
+            "       ' nvl(trade_seat, '' ''), ' ||"
+            "       ' nvl(bind_seat, '' ''), ' ||"
+            "       ' nvl(invest_type, '' ''), ' ||"
+            "       ' nvl(position_stock_type, '' ''), ' ||"
+            "       ' market_no, ' ||"
+            "       ' nvl(position_type, '' ''), ' ||"
+            "       ' nvl(report_code, '' ''), ' ||"
+            "       ' busin_flag, ' ||"
+            "       ' nvl(settle_currency_no, '' ''), ' ||"
+            "       ' deal_price, ' ||"         
+            "       ' occur_date, ' ||"         
+            "       ' nvl(deal_no, '' ''), ' ||"
+            "       ' nvl(report_serial_no_str, '' ''), ' ||"
+            "       ' trade_platform_id, ' ||"
+            "       ' entrust_direction, ' ||"
+            "		'settle_amount,' || "
+            "		'settle_balance,' || "
+            "		'stock_settle_date,' || "
+            "		'stock_settle_point,' || "
+            "		'nvl(stock_settle_flag, '' ''), ' || "
+            "		'cash_settle_date,' || "
+            "		'cash_settle_point,' || "
+            "		'cash_settle_flag  ' || "
+            "       ' from ' || V_TABLE_NAME_TMP; "
+            "  COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

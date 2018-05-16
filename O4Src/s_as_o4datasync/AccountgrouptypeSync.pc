@@ -1,0 +1,204 @@
+#include "AccountgrouptypeSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CAccountgrouptypeSync::CAccountgrouptypeSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "taccountgrouptype");
+    strcpy(m_sSrcView, "VO4JC_ACCOUNTGROUPTYPE");
+    strcpy(m_sTmpTable, "sync_accountgrouptype");
+    strcpy(m_sDstTable, "jc_taccountgrouptype");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CAccountgrouptypeSync::~CAccountgrouptypeSync()
+{
+}
+
+bool CAccountgrouptypeSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct AccountgrouptypeRecord
+    {
+        char group_type[BATCH_ROWS][2];
+        char type_full_name[BATCH_ROWS][33];
+        char type_name[BATCH_ROWS][33];
+        char multi_layer[BATCH_ROWS][2];
+        char risk_flag[BATCH_ROWS][2];
+        char risk_layer[BATCH_ROWS][2];
+        char query_flag[BATCH_ROWS][2];
+        char instruction_flag[BATCH_ROWS][2];
+        char fund_layer[BATCH_ROWS][2];
+        char fund_types[BATCH_ROWS][65];
+        char combi_param_flag[BATCH_ROWS][2];
+        char self_creatuse[BATCH_ROWS][2];
+        char risk_types[BATCH_ROWS][65];
+        char single_own[BATCH_ROWS][2];
+        char right_type[BATCH_ROWS][2];
+    } AccountgrouptypeRecord;
+    AccountgrouptypeRecord *lpAccountgrouptypeRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpAccountgrouptypeRecord =  new AccountgrouptypeRecord();
+    if (NULL == lpAccountgrouptypeRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【AccountgrouptypeRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpAccountgrouptypeRecord, 0, sizeof (AccountgrouptypeRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select group_type, type_full_name, type_name, multi_layer, risk_flag, risk_layer, query_flag, 
+        instruction_flag, fund_layer, fund_types, combi_param_flag, self_creatuse, risk_types, 
+        single_own, right_type 
+        from VO4JC_ACCOUNTGROUPTYPE;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpAccountgrouptypeRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpAccountgrouptypeRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpAccountgrouptypeRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_accountgrouptype(group_type, type_full_name, type_name, multi_layer, risk_flag, risk_layer, query_flag, instruction_flag, fund_layer, fund_types, combi_param_flag, self_creatuse, risk_types, single_own, right_type)
+             values(rtrim(:lpAccountgrouptypeRecord->group_type),
+										rtrim(:lpAccountgrouptypeRecord->type_full_name),
+										rtrim(:lpAccountgrouptypeRecord->type_name),
+										rtrim(:lpAccountgrouptypeRecord->multi_layer),
+										rtrim(:lpAccountgrouptypeRecord->risk_flag),
+										rtrim(:lpAccountgrouptypeRecord->risk_layer),
+										rtrim(:lpAccountgrouptypeRecord->query_flag),
+										rtrim(:lpAccountgrouptypeRecord->instruction_flag),
+										rtrim(:lpAccountgrouptypeRecord->fund_layer),
+										rtrim(:lpAccountgrouptypeRecord->fund_types),
+										rtrim(:lpAccountgrouptypeRecord->combi_param_flag),
+										rtrim(:lpAccountgrouptypeRecord->self_creatuse),
+										rtrim(:lpAccountgrouptypeRecord->risk_types),
+										rtrim(:lpAccountgrouptypeRecord->single_own),
+										rtrim(:lpAccountgrouptypeRecord->right_type));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpAccountgrouptypeRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpAccountgrouptypeRecord;
+    return true;
+}
+
+bool CAccountgrouptypeSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME      VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME || '(' ||   "
+            "        ' ACCTGRP_TYPE,' ||  "
+            "        ' ACCTGRP_TYPE_O32,' ||  "
+            "        ' ACCTGRP_TYPE_FULLNAME,' ||  "
+            "        ' ACCTGRP_TYPE_NAME,' ||  "
+            "        ' ACCTGRP_MULTI_LAYER,' ||  "
+            "        ' RISK_FLAG,' ||  "
+            "        ' RISK_LAYER,' ||  "
+            "        ' REPORT_QUERY_FLAG,' ||  "
+            "        ' INSTRUCTION_FLAG,' ||  "
+            "        ' FUND_LEVEL,' ||  "
+            "        ' FUND_TYPE_LIST,' ||  "
+            "        ' COMBI_MODEL_FLAG,' ||  "
+            "        ' SELF_CREATUSE,' ||  "
+            "        ' RULE_TYPES,' ||  "
+            "        ' SINGLE_OWN,' ||  "
+            "        ' FUND_RIGHT_TYPE)' ||  "
+            "        ' SELECT ASCII(NVL(T1.GROUP_TYPE, ''0'')) - ASCII(''0'') GROUP_TYPE,' ||   "
+            "        ' NVL(T1.GROUP_TYPE, '' ''),' ||   "
+            "        ' NVL(T1.TYPE_FULL_NAME, '' ''),' ||   "
+            "        ' NVL(T1.TYPE_NAME, '' ''),' ||   "
+            "        ' NVL(T1.MULTI_LAYER, '' ''),' ||   "
+            "        ' NVL(T1.RISK_FLAG, '' ''),' ||   "
+            "        ' NVL(T1.RISK_LAYER, '' ''),' ||   "
+            "        ' NVL(T1.QUERY_FLAG, '' ''),' ||  "
+            "        ' ASCII(NVL(T1.INSTRUCTION_FLAG, ''0'')) - ASCII(''0''),' ||  "
+            "        ' DECODE(T1.FUND_LAYER, ''1'', ''3'', ''2'', ''4'', ''3'', ''5'', ''4'', ''1'', ''5'', ''2'', T1.FUND_LAYER) FUND_LAYER,' ||  "
+            "        ' NVL(T1.FUND_TYPES, '' ''),' ||  "
+            "        ' NVL(T1.COMBI_PARAM_FLAG, '' ''),' ||  "
+            "        ' NVL(T1.SELF_CREATUSE, '' ''),' ||  "
+            "        ' NVL(T1.RISK_TYPES, '' ''),' ||  "
+            "        ' NVL(T1.SINGLE_OWN, '' ''),' ||  "
+            "        ' NVL(T1.RIGHT_TYPE, '' '') ' || "
+            "        '  FROM SYNC_ACCOUNTGROUPTYPE T1 ';"
+            ""
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

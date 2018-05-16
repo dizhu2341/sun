@@ -1,0 +1,308 @@
+#include "OptionSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+COptionSync::COptionSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "toptionproperty");
+    strcpy(m_sSrcView, "VO4JC_OPTIONPROPERTY");
+    strcpy(m_sTmpTable, "sync_option");
+    strcpy(m_sDstTable, "jc_toptionproperty");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+COptionSync::~COptionSync()
+{
+
+}
+
+bool COptionSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    //声明结构体变量
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+
+    typedef struct OptionRecord
+    {
+        char   market_no[BATCH_ROWS][2];
+        char   report_code[BATCH_ROWS][33];
+        char   bd_market_no[BATCH_ROWS][2];
+        char   bd_report_code[BATCH_ROWS][33];
+        char   target_type[BATCH_ROWS][5];
+        char   option_exercise_type[BATCH_ROWS][2];
+        double warrant_price[BATCH_ROWS];
+        char   stock_type[BATCH_ROWS][3];
+        double contract_unit[BATCH_ROWS];
+        int first_trade_date[BATCH_ROWS];
+        int last_trade_date[BATCH_ROWS];
+        int exercise_begin_date[BATCH_ROWS];
+        int exercise_end_date[BATCH_ROWS];
+        char contract_version[BATCH_ROWS][2];
+        double yesterday_close_price[BATCH_ROWS];
+        double pre_settle_price[BATCH_ROWS];
+        double uplimited_price[BATCH_ROWS];
+        double downlimited_price[BATCH_ROWS];
+        double settle_price[BATCH_ROWS];
+        double limitprice_order_min[BATCH_ROWS];
+        double limitprice_order_max[BATCH_ROWS];
+        double marketprice_order_min[BATCH_ROWS];
+        double marketprice_order_max[BATCH_ROWS];
+        double deposit_rato1[BATCH_ROWS];
+        double deposit_rato2[BATCH_ROWS];
+        double deposit_unit[BATCH_ROWS];
+        int option_status[BATCH_ROWS];
+    } OptionRecord;
+    OptionRecord *lpOptionRecord;
+    EXEC SQL END DECLARE SECTION;
+    lpOptionRecord = new OptionRecord();
+    if (NULL == lpOptionRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【OptionRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpOptionRecord, 0, sizeof (OptionRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR
+        SELECT 
+        MARKET_NO,                  REPORT_CODE,                BD_MARKET_NO,               BD_REPORT_CODE,           
+        TARGET_TYPE,                OPTION_EXERCISE_TYPE,       WARRANT_PRICE,              STOCK_TYPE,         
+        CONTRACT_UNIT,              FIRST_TRADE_DATE,           LAST_TRADE_DATE,            EXERCISE_BEGIN_DATE,
+        EXERCISE_END_DATE,          CONTRACT_VERSION,           YESTERDAY_CLOSE_PRICE,      PRE_SETTLE_PRICE,
+        UPLIMITED_PRICE,            DOWNLIMITED_PRICE,          SETTLE_PRICE,               LIMITPRICE_ORDER_MIN,
+        LIMITPRICE_ORDER_MAX,       MARKETPRICE_ORDER_MIN,      MARKETPRICE_ORDER_MAX,      DEPOSIT_RATO1,
+        DEPOSIT_RATO2,              DEPOSIT_UNIT,               OPTION_STATUS
+        FROM VO4JC_OPTIONPROPERTY;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpOptionRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpOptionRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpOptionRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+            insert into sync_option(
+                    market_no,                  report_code,                bd_market_no,               bd_report_code,           
+                    target_type,                option_exercise_type,       warrant_price,              stock_type,         
+                    contract_unit,              first_trade_date,           last_trade_date,            exercise_begin_date,
+                    exercise_end_date,          contract_version,           yesterday_close_price,      pre_settle_price,
+                    uplimited_price,            downlimited_price,          settle_price,               limitprice_order_min,
+                    limitprice_order_max,       marketprice_order_min,      marketprice_order_max,      deposit_rato1,
+                    deposit_rato2,              deposit_unit,               option_status)
+            values(rtrim(:lpOptionRecord->market_no),
+                    rtrim(:lpOptionRecord->report_code),
+                    rtrim(:lpOptionRecord->bd_market_no),
+                    rtrim(:lpOptionRecord->bd_report_code),
+                    rtrim(:lpOptionRecord->target_type),
+                    rtrim(:lpOptionRecord->option_exercise_type),
+                    :lpOptionRecord->warrant_price,
+                    rtrim(:lpOptionRecord->stock_type),
+                    :lpOptionRecord->contract_unit,
+                    :lpOptionRecord->first_trade_date,
+                    :lpOptionRecord->last_trade_date,
+                    :lpOptionRecord->exercise_begin_date,
+                    :lpOptionRecord->exercise_end_date,
+                    rtrim(:lpOptionRecord->contract_version), 
+                    :lpOptionRecord->yesterday_close_price,
+                    :lpOptionRecord->pre_settle_price,
+                    :lpOptionRecord->uplimited_price, 
+                    :lpOptionRecord->downlimited_price,
+                    :lpOptionRecord->settle_price,
+                    :lpOptionRecord->limitprice_order_min, 
+                    :lpOptionRecord->limitprice_order_max, 
+                    :lpOptionRecord->marketprice_order_min, 
+                    :lpOptionRecord->marketprice_order_max, 
+                    :lpOptionRecord->deposit_rato1, 
+                    :lpOptionRecord->deposit_rato2,
+                    :lpOptionRecord->deposit_unit,
+                    :lpOptionRecord->option_status);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpOptionRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    delete lpOptionRecord;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    return true;
+}
+
+bool COptionSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始导入数据到O4表【" << m_sDstTable << "】");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_START_INTER_CODE NUMBER := 0;"
+            "  V_INIT_TYPE       CHAR(1);"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  V_INIT_TYPE      := '%c';"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  SELECT MAX(TO_NUMBER(SUBSTR(TO_CHAR(INTER_CODE), 1, 7)))"
+            "    INTO V_START_INTER_CODE"
+            "    FROM (SELECT INTER_CODE,"
+            "                 CASE"
+            "                   WHEN MARKET_NO IN (1, 2, 5) AND LENGTH(REPORT_CODE) <= 6 AND"
+            "                        REGEXP_LIKE(REPORT_CODE, '^[0-9]+$') THEN"
+            "                    1"
+            "                   ELSE"
+            "                    0"
+            "                 END MM"
+            "            FROM JC_TCONVERTINTERCODE)"
+            "   WHERE MM = 0;"
+            "  V_START_INTER_CODE := CASE"
+            "                          WHEN V_START_INTER_CODE IS NULL THEN"
+            "                           0"
+            "                          ELSE"
+            "                           V_START_INTER_CODE - 1000000"
+            "                        END;"
+            ""
+            "  EXECUTE IMMEDIATE 'INSERT INTO '||V_TABLE_NAME_O4||' (' ||"
+            "                    'INTER_CODE,                MARKET_NO,                 REPORT_CODE,                UNDERLYING_INTER_CODE,' ||"
+            "                    'OPTION_TYPE,              OPTION_EXERCISE_TYPE,       WARRANT_PRICE,              STOCK_TYPE,' ||"
+            "                    'CONTRACT_UNIT,            FIRST_TRADE_DATE,           LAST_TRADE_DATE,               EXERCISE_BEGIN_DATE,' ||"
+            "                    'EXERCISE_END_DATE,        YESTERDAY_CLOSE_PRICE,      PRE_SETTLE_PRICE,       UPLIMITED_PRICE,' ||"
+            "                    'DOWNLIMITED_PRICE,        SETTLE_PRICE,               LIMITPRICE_ORDER_MIN,    LIMITPRICE_ORDER_MAX,' ||"
+            "                    'MARKETPRICE_ORDER_MIN,    MARKETPRICE_ORDER_MAX,      DEPOSIT_RATO1,         DEPOSIT_RATO2,' ||"
+            "                    'DEPOSIT_UNIT,                 OPTION_STATUS) ' ||"
+            "                    'WITH V_OPTION_INFO AS' || "
+            "                    '   (SELECT T11.MARKET_NO AS MARKET_NO_SRC,' || "
+            "                    '           T12.MARKET_NO,' || "
+            "                    '           T11.REPORT_CODE,' || "
+            "                    '           T13.MARKET_NO AS BD_MARKET_NO,' || "
+            "                    '           T11.BD_REPORT_CODE' || "
+            "                    '    FROM '||V_TABLE_NAME_TMP||' T11,JC_TCONVERTMARKETNO T12,JC_TCONVERTMARKETNO T13' || "
+            "                    '    WHERE T11.MARKET_NO=T12.MARKET_NO_SRC' || "
+            "                    '    AND T11.BD_MARKET_NO=T13.MARKET_NO_SRC(+)),' || "
+            "                    'V_INTER_CODE AS' || "
+            "                    ' (SELECT T200.MARKET_NO_SRC,T200.MARKET_NO,T200.REPORT_CODE,' || "
+            "                    '   CASE WHEN T200.INTER_CODE IS NOT NULL THEN ' || "
+            "                    '   T200.INTER_CODE ' || "
+            "                    '   ELSE (CASE WHEN '||V_INIT_TYPE||'=''1'' THEN NULL ELSE SF_CREATE_INTERCODE_WITH_INDEX(T200.MARKET_NO, T200.REPORT_CODE, '||V_START_INTER_CODE||'+T200.RN) END) ' || "
+            "                    '   END INTER_CODE,' || "
+            "                    '   T200.UNDERLYING_INTER_CODE' || "
+            "                    ' FROM (SELECT T21.*,T22.INTER_CODE,T23.INTER_CODE AS UNDERLYING_INTER_CODE,' || "
+            "                    '      ROW_NUMBER() OVER(ORDER BY CASE WHEN T22.INTER_CODE IS NULL THEN 1 ELSE 2 END) RN' || "
+            "                    '      FROM V_OPTION_INFO T21,JC_TCONVERTINTERCODE T22,JC_TCONVERTINTERCODE T23' || "
+            "                    '      WHERE T21.MARKET_NO=T22.MARKET_NO(+)' || "
+            "                    '      AND T21.REPORT_CODE=T22.REPORT_CODE(+)' || "
+            "                    '      AND T21.BD_MARKET_NO=T23.MARKET_NO(+)' || "
+            "                    '      AND T21.BD_REPORT_CODE=T23.REPORT_CODE(+) ) T200)' || "
+            "                    '  SELECT C.INTER_CODE,' || "
+            "                    '         C.MARKET_NO,' || "
+            "                    '         C.REPORT_CODE,' || "
+            "                    '         NVL(C.UNDERLYING_INTER_CODE, 0),' || "
+            "                    '         D.SUB_DIC_NO,' || "
+            "                    '         A.OPTION_EXERCISE_TYPE,' || "
+            "                    '         A.WARRANT_PRICE,' || "
+            "                    '         B.STOCK_TYPE,' || "
+            "                    '         A.CONTRACT_UNIT,' || "
+            "                    '         A.FIRST_TRADE_DATE,' || "
+            "                    '         A.LAST_TRADE_DATE,' || "
+            "                    '         A.EXERCISE_BEGIN_DATE,' || "
+            "                    '         A.EXERCISE_END_DATE,' || "
+            "                    '         A.YESTERDAY_CLOSE_PRICE,' || "
+            "                    '         A.PRE_SETTLE_PRICE,' || "
+            "                    '         A.UPLIMITED_PRICE,' || "
+            "                    '         A.DOWNLIMITED_PRICE,' || "
+            "                    '         A.SETTLE_PRICE,' || "
+            "                    '         A.LIMITPRICE_ORDER_MIN,' || "
+            "                    '         A.LIMITPRICE_ORDER_MAX,' || "
+            "                    '         A.MARKETPRICE_ORDER_MIN,' || "
+            "                    '         A.MARKETPRICE_ORDER_MAX,' || "
+            "                    '         A.DEPOSIT_RATO1,' || "
+            "                    '         A.DEPOSIT_RATO2,' || "
+            "                    '         A.DEPOSIT_UNIT,' || "
+            "                    '         A.OPTION_STATUS' || "
+            "                    '    FROM '||V_TABLE_NAME_TMP||'  A,' || "
+            "                    '         JC_TCONVERTSTOCKTYPE    B,' || "
+            "                    '         V_INTER_CODE            C,' || "
+            "                    '         JC_TCONVERTDIC          D' || "
+            "                    '   WHERE A.STOCK_TYPE = B.STOCK_TYPE_SRC' || "
+            "                    '     AND A.MARKET_NO = C.MARKET_NO_SRC' || "
+            "                    '     AND A.REPORT_CODE = C.REPORT_CODE' || "
+            "                    '     AND D.DIC_NO = 610081' || "
+            "                    '     AND D.SUB_DIC_SRC = A.TARGET_TYPE'; "
+            "   IF V_INIT_TYPE<>'1' THEN"
+            "       EXECUTE IMMEDIATE 'insert into jc_tconvertintercode select a.inter_code, a.market_no, a.report_code, '' '' from '||V_TABLE_NAME_O4||' a where a.inter_code not in (select inter_code from jc_tconvertintercode)';"
+            "   END IF;"
+            "   EXECUTE IMMEDIATE 'UPDATE JC_TOPTIONPROPERTY T1 SET T1.CONTRACT_IDENT_CODE = (SELECT RTRIM(T2.CONTRACT_IDENT_CODE)  FROM JC_TSTOCK T2 WHERE T1.INTER_CODE = T2.INTER_CODE)  WHERE EXISTS  (SELECT 1 FROM JC_TSTOCK T2 WHERE T1.INTER_CODE = T2.INTER_CODE)'; "
+            "   COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable, m_cSyncFlag);
+
+    if (m_cSyncFlag == '2')
+    {
+        hsLockCreateInterCode();
+    }
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (m_cSyncFlag == '2')
+    {
+        hsUnlockCreateInterCode();
+    }
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

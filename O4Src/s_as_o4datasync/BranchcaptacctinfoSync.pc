@@ -1,0 +1,194 @@
+#include "BranchcaptacctinfoSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CBranchcaptacctinfoSync::CBranchcaptacctinfoSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tyybzjzhxx");
+    strcpy(m_sSrcView, "VO4JC_YYBZJZHXX");
+    strcpy(m_sTmpTable, "sync_branchcaptacctinfo");
+    strcpy(m_sDstTable, "jc_tbranchcaptacctinfo");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CBranchcaptacctinfoSync::~CBranchcaptacctinfoSync()
+{
+}
+
+bool CBranchcaptacctinfoSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;        
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        int nFetchRows;
+        //声明结构体变量
+
+        typedef struct BranchcaptacctinfoRecord
+        {
+            int branch_id[BATCH_ROWS];
+            char capital_account_no[BATCH_ROWS][129];
+            char sys_branch_code[BATCH_ROWS][9];
+            char capital_password[BATCH_ROWS][33];
+            char fc_type[BATCH_ROWS][2];
+            char branch_adjust_flag[BATCH_ROWS][2];
+            int default_asset[BATCH_ROWS];
+            int append_combi[BATCH_ROWS];
+            int append_combi_qhtj[BATCH_ROWS];
+            int append_combi_qhtl[BATCH_ROWS];
+            int append_combi_qhtb[BATCH_ROWS];
+            char ip_address[BATCH_ROWS][257];
+            char mac[BATCH_ROWS][21];
+            char volserial_no[BATCH_ROWS][129];
+            int append_operator[BATCH_ROWS];
+            char capital_account_no_liq[BATCH_ROWS][129];
+            int capital_account_id[BATCH_ROWS];
+            char capital_account_liq_type[BATCH_ROWS][2];
+        } BranchcaptacctinfoRecord;
+        BranchcaptacctinfoRecord *lpBranchcaptacctinfoRecord = NULL;
+    EXEC SQL END DECLARE SECTION;   
+       
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    if (NULL == o3Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O3数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select branch_id, capital_account_no, sys_branch_code, capital_password, fc_type, 
+                            branch_adjust_flag, default_asset, append_combi, append_combi_qhtj, append_combi_qhtl, 
+                            append_combi_qhtb, ip_address, mac, volserial_no, append_operator, capital_account_no_liq, capital_account_id,
+                            capital_account_liq_type
+                    from VO4JC_YYBZJZHXX;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);        
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+     // 申请内存空间
+    lpBranchcaptacctinfoRecord = new BranchcaptacctinfoRecord();
+    if (NULL == lpBranchcaptacctinfoRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【BranchcaptacctinfoRecord】失败", m_sDstTable);
+        return false;
+    }    
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        memset(lpBranchcaptacctinfoRecord, 0, sizeof (BranchcaptacctinfoRecord));
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpBranchcaptacctinfoRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpBranchcaptacctinfoRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_branchcaptacctinfo(
+                    branch_id, capital_account_no, sys_branch_code, capital_password, fc_type, branch_adjust_flag, default_asset, append_combi, append_combi_qhtj, append_combi_qhtl, append_combi_qhtb, ip_address, mac, volserial_no, append_operator,capital_account_no_liq, capital_account_id, capital_account_liq_type)
+             values(:lpBranchcaptacctinfoRecord->branch_id,
+                    rtrim(:lpBranchcaptacctinfoRecord->capital_account_no),
+                    rtrim(:lpBranchcaptacctinfoRecord->sys_branch_code),
+                    rtrim(:lpBranchcaptacctinfoRecord->capital_password),
+                    rtrim(:lpBranchcaptacctinfoRecord->fc_type),
+                    rtrim(:lpBranchcaptacctinfoRecord->branch_adjust_flag),
+                    :lpBranchcaptacctinfoRecord->default_asset,
+                    :lpBranchcaptacctinfoRecord->append_combi,
+                    :lpBranchcaptacctinfoRecord->append_combi_qhtj,
+                    :lpBranchcaptacctinfoRecord->append_combi_qhtl,
+                    :lpBranchcaptacctinfoRecord->append_combi_qhtb,
+                    rtrim(:lpBranchcaptacctinfoRecord->ip_address),
+                    rtrim(:lpBranchcaptacctinfoRecord->mac),
+                    rtrim(:lpBranchcaptacctinfoRecord->volserial_no),
+                    :lpBranchcaptacctinfoRecord->append_operator,
+                    rtrim(:lpBranchcaptacctinfoRecord->capital_account_no_liq),
+                    :lpBranchcaptacctinfoRecord->capital_account_id,
+                    rtrim(:lpBranchcaptacctinfoRecord->capital_account_liq_type));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpBranchcaptacctinfoRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpBranchcaptacctinfoRecord;
+    return true;
+}
+
+bool CBranchcaptacctinfoSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+        char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   BRANCH_ID,CAPITAL_ACCOUNT_NO,SYS_BRANCH_CODE,CAPITAL_PASSWORD,FC_TYPE,BRANCH_ADJUST_FLAG,DEFAULT_ASSET,APPEND_COMBI, '   ||"
+            "       '   APPEND_COMBI_QHTJ,APPEND_COMBI_QHTL,APPEND_COMBI_QHTB,IP_ADDRESS,MAC,VOLSERIAL_NO,APPEND_OPERATOR,CAPITAL_ACCOUNT_NO_LIQ, CAPITAL_ACCOUNT_ID, capital_account_liq_type) '   ||"
+            "       '   SELECT T1.BRANCH_ID, NVL(T1.CAPITAL_ACCOUNT_NO,'' ''), NVL(T1.SYS_BRANCH_CODE,'' ''), NVL(T1.CAPITAL_PASSWORD,'' ''), NVL(T1.FC_TYPE,'' ''), NVL(T1.BRANCH_ADJUST_FLAG,'' ''), T1.DEFAULT_ASSET, T1.APPEND_COMBI, '   ||" 
+            "       '   T1.APPEND_COMBI_QHTJ, T1.APPEND_COMBI_QHTL, T1.APPEND_COMBI_QHTB, NVL(T1.IP_ADDRESS,'' ''), NVL(T1.MAC,'' ''), NVL(T1.VOLSERIAL_NO,'' ''), T1.APPEND_OPERATOR, NVL(T1.CAPITAL_ACCOUNT_NO_LIQ,'' ''), NVL(CAPITAL_ACCOUNT_ID, 0), T1.capital_account_liq_type'   ||"
+            "       '   FROM SYNC_BRANCHCAPTACCTINFO T1  ';  "
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

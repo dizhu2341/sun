@@ -1,0 +1,294 @@
+#include "EtfbasicinfoSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CEtfbasicinfoSync::CEtfbasicinfoSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tetfbasicinfo");
+    strcpy(m_sSrcView, "VO4JC_ETFBASICINFO");
+    strcpy(m_sTmpTable, "sync_etfbasicinfo");
+    strcpy(m_sDstTable, "jc_tetfbasicinfo");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CEtfbasicinfoSync::~CEtfbasicinfoSync()
+{
+}
+
+bool CEtfbasicinfoSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct EtfbasicinfoRecord
+    {
+        char market_no[BATCH_ROWS][2];
+        char report_code[BATCH_ROWS][33];
+        char etf_code1[BATCH_ROWS][33];
+        char etf_capital_code[BATCH_ROWS][33];
+        char etf_capital_code2[BATCH_ROWS][33];
+        int etf_report_unit[BATCH_ROWS];
+        double maxcash_ratio[BATCH_ROWS];
+        char creationredem_type[BATCH_ROWS][2];
+        double estimatecash[BATCH_ROWS];
+        double etf_last_cash[BATCH_ROWS];
+        double etf_last_nav_percu[BATCH_ROWS];
+        double etf_last_nav[BATCH_ROWS];
+        double fund_code2_settle_days[BATCH_ROWS];
+        char etf_type[BATCH_ROWS][2];
+        char etf_stock_type[BATCH_ROWS][2];
+        char rival_market[BATCH_ROWS][2];
+        int ws_cash_begin_date[BATCH_ROWS];
+        int ws_cash_end_date[BATCH_ROWS];
+        int wx_cash_begin_date[BATCH_ROWS];
+        int wx_cash_end_date[BATCH_ROWS];
+        int wx_stock_begin_date[BATCH_ROWS];
+        int wx_stock_end_date[BATCH_ROWS];
+        char exec_type[BATCH_ROWS][2];
+    } EtfbasicinfoRecord;
+    EtfbasicinfoRecord *lpEtfbasicinfoRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpEtfbasicinfoRecord = new EtfbasicinfoRecord();
+    if (NULL == lpEtfbasicinfoRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【EtfbasicinfoRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpEtfbasicinfoRecord, 0, sizeof (EtfbasicinfoRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select market_no, report_code, etf_code1, etf_capital_code, etf_capital_code2, etf_report_unit, maxcash_ratio, creationredem_type, estimatecash, etf_last_cash, etf_last_nav_percu, etf_last_nav, fund_code2_settle_days, etf_type, etf_stock_type, rival_market, ws_cash_begin_date, ws_cash_end_date, wx_cash_begin_date, wx_cash_end_date, wx_stock_begin_date, wx_stock_end_date, exec_type 
+                    from VO4JC_ETFBASICINFO;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpEtfbasicinfoRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpEtfbasicinfoRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpEtfbasicinfoRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_etfbasicinfo(market_no, report_code, etf_code1, etf_capital_code, etf_capital_code2, etf_report_unit, maxcash_ratio, creationredem_type, estimatecash, etf_last_cash, etf_last_nav_percu, etf_last_nav, fund_code2_settle_days, etf_type, etf_stock_type, rival_market, ws_cash_begin_date, ws_cash_end_date, wx_cash_begin_date, wx_cash_end_date, wx_stock_begin_date, wx_stock_end_date, exec_type)
+             values(rtrim(:lpEtfbasicinfoRecord->market_no),
+										rtrim(:lpEtfbasicinfoRecord->report_code),
+										rtrim(:lpEtfbasicinfoRecord->etf_code1),
+										rtrim(:lpEtfbasicinfoRecord->etf_capital_code),
+										rtrim(:lpEtfbasicinfoRecord->etf_capital_code2),
+										:lpEtfbasicinfoRecord->etf_report_unit,
+										:lpEtfbasicinfoRecord->maxcash_ratio,
+										rtrim(:lpEtfbasicinfoRecord->creationredem_type),
+										:lpEtfbasicinfoRecord->estimatecash,
+										:lpEtfbasicinfoRecord->etf_last_cash,
+										:lpEtfbasicinfoRecord->etf_last_nav_percu,
+										:lpEtfbasicinfoRecord->etf_last_nav,
+										:lpEtfbasicinfoRecord->fund_code2_settle_days,
+										rtrim(:lpEtfbasicinfoRecord->etf_type),
+										rtrim(:lpEtfbasicinfoRecord->etf_stock_type),
+										rtrim(:lpEtfbasicinfoRecord->rival_market),
+										:lpEtfbasicinfoRecord->ws_cash_begin_date,
+										:lpEtfbasicinfoRecord->ws_cash_end_date,
+										:lpEtfbasicinfoRecord->wx_cash_begin_date,
+										:lpEtfbasicinfoRecord->wx_cash_end_date,
+										:lpEtfbasicinfoRecord->wx_stock_begin_date,
+										:lpEtfbasicinfoRecord->wx_stock_end_date,
+										rtrim(:lpEtfbasicinfoRecord->exec_type));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpEtfbasicinfoRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpEtfbasicinfoRecord;
+    return true;
+}
+
+bool CEtfbasicinfoSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+    
+    if (!DropTableIndex())
+        return false;
+    
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_START_INTER_CODE NUMBER := 0;"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  V_INIT_TYPE       CHAR(1);"
+            "  V_INIT_DATE       NUMBER(8); "
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  V_INIT_TYPE      := '%c';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  SELECT MAX(TO_NUMBER(SUBSTR(TO_CHAR(INTER_CODE), 1, 7)))"
+            "    INTO V_START_INTER_CODE"
+            "    FROM (SELECT INTER_CODE,"
+            "                 CASE"
+            "                   WHEN MARKET_NO IN (1, 2, 5) AND LENGTH(REPORT_CODE) <= 6 AND"
+            "                        REGEXP_LIKE(REPORT_CODE, '^[0-9]+$') THEN"
+            "                    1"
+            "                   ELSE"
+            "                    0"
+            "                 END MM"
+            "            FROM JC_TCONVERTINTERCODE)"
+            "   WHERE MM = 0;"
+            "  V_START_INTER_CODE := CASE"
+            "                          WHEN V_START_INTER_CODE IS NULL THEN"
+            "                           0"
+            "                          ELSE"
+            "                           V_START_INTER_CODE - 1000000"
+            "                        END;"
+            ""
+            "  IF V_INIT_TYPE <> '1' THEN"
+            "    EXECUTE IMMEDIATE 'INSERT INTO JC_TCONVERTINTERCODE(MARKET_NO,REPORT_CODE,INTER_CODE)' ||"
+            "                      '  SELECT V.MARKET_NO,' ||"
+            "                      '         V.REPORT_CODE,' ||"
+            "                      '         SF_CREATE_INTERCODE_WITH_INDEX(V.MARKET_NO,' ||"
+            "                      '                                        V.REPORT_CODE,' ||"
+            "                      '                                        '||V_START_INTER_CODE||' + V.RN)' ||"
+            "                      '    FROM (SELECT T1.*, T2.INTER_CODE,ROW_NUMBER() OVER(ORDER BY CASE WHEN t2.INTER_CODE IS NULL THEN 1 ELSE 2 END) RN' ||"
+            "                      '            FROM (SELECT DISTINCT A.MARKET_NO MARKET_NO_SRC,' ||"
+            "                      '                                  B.MARKET_NO,' ||"
+            "                      '                                  A.REPORT_CODE' ||"
+            "                      '                    FROM SYNC_ETFBASICINFO A, JC_TCONVERTMARKETNO B' ||"
+            "                      '                   WHERE A.MARKET_NO = B.MARKET_NO_SRC) T1' ||"
+            "                      '            LEFT JOIN JC_TCONVERTINTERCODE T2' ||"
+            "                      '              ON T1.MARKET_NO = T2.MARKET_NO' ||"
+            "                      '             AND T1.REPORT_CODE = T2.REPORT_CODE) V' ||"
+            "                      '             WHERE V.INTER_CODE IS NULL';"
+            "  END IF;"
+            " SELECT INIT_DATE INTO V_INIT_DATE FROM JC_TSYSTEMINFO;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "	'   BUSINESS_DATE,INTER_CODE,MARKET_NO,	'   ||"
+            "	'   REPORT_CODE,ETF_CODE1,ETF_CAPITAL_CODE,ETF_CAPITAL_CODE2,	'   ||"
+            "	'   ETF_REPORT_UNIT,MAXCASH_RATIO,CREATIONREDEM_TYPE,	'   ||"
+            "	'   ESTIMATECASH,ETF_LAST_CASH,ETF_LAST_NAV_PERCU,	'   ||"
+            "	'   ETF_LAST_NAV,FUND_CODE2_SETTLE_DAYS,	'   ||"
+            "	'   ETF_TYPE,RIVAL_MARKET,WS_CASH_BEGIN_DATE,	'   ||"
+            "	'   WS_CASH_END_DATE,WX_CASH_BEGIN_DATE,WX_CASH_END_DATE,WX_STOCK_BEGIN_DATE,	'   ||"
+            "	'   WX_STOCK_END_DATE,ETF_STOCK_TYPE,EXEC_TYPE)	'   ||"
+            "	'	SELECT '||V_INIT_DATE||',T3.INTER_CODE,T2.MARKET_NO,	' ||"
+            "	'	NVL(T1.REPORT_CODE, '' ''),NVL(T1.ETF_CODE1, '' ''),NVL(T1.ETF_CAPITAL_CODE, '' ''),NVL(T1.ETF_CAPITAL_CODE2, '' ''),' ||"
+            "	'	T1.ETF_REPORT_UNIT,T1.MAXCASH_RATIO,NVL(T1.CREATIONREDEM_TYPE, '' ''),' ||"
+            "	'	T1.ESTIMATECASH,T1.ETF_LAST_CASH,T1.ETF_LAST_NAV_PERCU,' ||"
+            "	'	T1.ETF_LAST_NAV,T1.FUND_CODE2_SETTLE_DAYS,' ||"
+            "	'	NVL(T1.ETF_TYPE,''1''),NVL(T4.MARKET_NO,0),T1.WS_CASH_BEGIN_DATE,' ||"
+            "	'	T1.WS_CASH_END_DATE,T1.WX_CASH_BEGIN_DATE,T1.WX_CASH_END_DATE,T1.WX_STOCK_BEGIN_DATE,' ||"
+            "	'	T1.WX_STOCK_END_DATE,NVL(T1.ETF_STOCK_TYPE,''1''),NVL(T1.EXEC_TYPE,''0'')' ||"
+            "	'	FROM    SYNC_ETFBASICINFO T1,JC_TCONVERTMARKETNO T2 , JC_TCONVERTINTERCODE T3,JC_TCONVERTMARKETNO T4' ||"
+            "	'	WHERE T1.MARKET_NO = T2.MARKET_NO_SRC' ||"
+            "	'	AND T1.REPORT_CODE = T3.REPORT_CODE' ||"
+            "	'	AND T2.MARKET_NO = T3.MARKET_NO AND T1.RIVAL_MARKET = T4.MARKET_NO_SRC(+)  '; "
+            "  COMMIT;"
+            "END;",m_sDstTable, m_cSyncFlag);
+
+    if (m_cSyncFlag == '2')
+    {
+        hsLockCreateInterCode();
+    }
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (m_cSyncFlag == '2')
+    {
+        hsUnlockCreateInterCode();
+    }
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+
+bool CEtfbasicinfoSync::ModifyStockType()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始调整证券类别");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL CONTEXT USE :o4Ctx;
+    //ETF证券类别调整
+    //QC:106133 新增etf_capital_code、etf_capital_code2代码的证券类别调整
+    EXEC SQL update jc_tstock a set a.stock_type = 84 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_stock_type='4' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 83 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '2' and a.etf_stock_type='2' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 82 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type <> '2' and a.etf_stock_type='2' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 77 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_stock_type='3' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 76 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_stock_type='5' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 59 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '4' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 58 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '3' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 57 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '2' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 55 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '1' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_UPDATE, "【%s】表同步，调整证券类别失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        EXEC SQL ROLLBACK;
+        return false;
+    }
+    EXEC SQL COMMIT;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，调整证券类别完成");
+    return true;
+}
+
+
+bool CEtfbasicinfoSync::AfterAction()
+{
+    if ( !ModifyStockType())
+    {
+        return false;
+    }
+    return true;
+}

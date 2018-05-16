@@ -1,0 +1,323 @@
+/******************************************************************************
+ * 文 件 名：jc_finger.pc
+ * 功能说明：指纹识别
+ * 作    者：翁建平
+ * 创建日期：2014.08.21
+ * 版 本 号：
+ * 修改历史：
+******************************************************************************/
+
+#include "hshead.h"
+
+#define SQLCA_STORAGE_CLASS extern
+
+#include <sqlca.h>
+#include <oci.h>
+
+EXEC SQL CONTEXT USE DEFAULT; 
+
+
+/*******************************************************************************
+ * 功能：新增指纹数据
+*******************************************************************************/
+int InsertFingerImage(IAS2Context* lpContext,IF2UnPacker * lpInUnPacker,IF2Packer * lpOutPacker)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		sql_context ctx = NULL;
+		//PRO*C变量声明
+		int p_pr_id = 0;
+		int v_error_no = 0;
+		char v_error_info[1025] = {0};
+		int v_error_id = 0;
+		char v_error_sysinfo[1025] = {0};
+		
+		OCIClobLocator *clob;
+		char * pBuf = NULL;
+		int iBufLen = 0;
+		
+		varchar *pNewBuf = NULL;
+		int iNewBufLen = 0;
+		unsigned int ClobLen = 0, WriteAmt = 0, Offset = 0;
+		
+		char * finger_template = NULL;
+		int operator_no = 0;
+		int finger_type = 0;
+		
+		int iReturnCode = 0;
+	EXEC SQL END DECLARE SECTION;
+	
+	struct sqlca sqlca;	
+	char v_error_pathinfo[4001] = {0};
+	    
+    pBuf = (char *)lpInUnPacker->GetRaw("finger_image", &iBufLen);
+    operator_no = lpInUnPacker->GetInt("operator_no");
+    finger_type = lpInUnPacker->GetInt("finger_type");
+    finger_template = (char *)lpInUnPacker->GetStr("finger_template");
+    
+    IConnection * lpConn = lpContext->GetDBConnection(O3DB);
+
+	if(lpConn)
+	{
+		ctx = lpConn->getSQLContext();
+
+		if (ctx)
+		{
+			EXEC SQL CONTEXT USE :ctx;
+			    
+            EXEC SQL ALLOCATE :clob;
+                
+            EXEC SQL insert into jc_tfingerimage
+                         (operator_no, finger_type, finger_template, finger_image)
+                     values
+                         (:operator_no, :finger_type, :finger_template, empty_clob());
+                            
+            EXEC SQL SELECT finger_image INTO :clob FROM jc_tfingerimage
+                 where operator_no=:operator_no 
+                   and finger_type=:finger_type
+                   for update;
+                   
+            EXEC SQL LOB  OPEN  :clob READ WRITE;//必须用READ WRITE打开，不然会报错的
+
+            //分配内存
+            iNewBufLen = iBufLen + 4 + 2; //4表示是varchar变量的len成员的长度, 2是防止溢出, 留出\0的位置。
+            pNewBuf = (varchar *)malloc(iNewBufLen);
+            memset(pNewBuf, 0, iNewBufLen);
+            
+            //拷贝数据
+            strcat((char *)pNewBuf->arr, pBuf);
+            pNewBuf->len = iBufLen;
+            pNewBuf->arr[iBufLen + 1] = '\0';
+            
+            //写入clob字段数据
+            WriteAmt = iBufLen + 1;
+            Offset = 1;   
+            EXEC SQL LOB WRITE ONE :WriteAmt FROM :pNewBuf
+                 WITH LENGTH :WriteAmt INTO :clob AT :Offset;
+            
+            //释放资源
+            free(pNewBuf);
+            EXEC SQL LOB CLOSE :clob;
+            EXEC SQL FREE :clob;
+
+			if (CheckDbLinkMethod(lpConn,SQLCODE) < 0)
+			{
+				if ((SQLCODE<= ERR_DB_NO_CONTINUE_FETCH) && (SQLCODE>= ERR_DB_FAILOVER_NETWORK_OPER_FAIL))
+				{
+					iReturnCode = SQLCODE;
+					v_error_no = SQLCODE;
+					hs_strncpy(v_error_info,sqlca.sqlerrm.sqlerrmc,sqlca.sqlerrm.sqlerrml);
+					v_error_id = SQLCODE;
+					hs_strncpy(v_error_sysinfo,sqlca.sqlerrm.sqlerrmc,sqlca.sqlerrm.sqlerrml);
+					EXEC SQL rollback;
+
+					goto svr_end;
+				}
+
+				lpConn->setErrMessage(HSDB_CONNECTION_STATUS_DISCONN,SQLCODE,sqlca.sqlerrm.sqlerrmc);
+			}
+
+			if (SQLCODE == OK_SUCCESS || SQLCODE == ERR_SELECTNODATA || SQLCODE == ERR_GETPROCOUTPUTERROR)
+
+			{
+				EXEC SQL commit;
+
+			}
+			else
+			{
+				iReturnCode = ERR_611061;
+				v_error_no   = ERR_611061;
+				hs_snprintf(v_error_info,CNST_ERRORINFO_LEN, "%s","p_operator_no");
+				v_error_id   = SQLCODE;
+				hs_strncpy(v_error_sysinfo,sqlca.sqlerrm.sqlerrmc,sqlca.sqlerrm.sqlerrml);
+
+				EXEC SQL rollback;
+				goto svr_end;
+
+			}
+		}
+		else
+		{
+			iReturnCode = ERR_SYS_BUSI_GET_CONTEXT_FAIL;
+			v_error_no = ERR_SYS_BUSI_GET_CONTEXT_FAIL;
+			hs_strcpy(v_error_info, "系统忙(上下文获取失败)");
+			v_error_id   = lpConn->getErrNo();
+			sprintf(v_error_sysinfo,"%s", lpConn->getErrInfo());
+			goto svr_end;
+		}
+
+	}
+	else
+	{
+		iReturnCode = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+		v_error_no = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+		sprintf(v_error_info, "系统忙(数据库连接[%s]无法获取).", O3DB);
+		v_error_id = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+		goto svr_end;
+	}
+
+
+	goto svr_end;
+svr_end:
+
+	if (iReturnCode == OK_SUCCESS || iReturnCode == ERR_SYSWARNING)
+	{}
+	else
+	{
+		GetErrorInfo(lpContext, v_error_no, v_error_info);
+		SystemErrorPacker(lpOutPacker,v_error_pathinfo,v_error_no,v_error_info);
+		WriteSystemLog(lpContext,v_error_pathinfo,v_error_no,v_error_info,v_error_id,v_error_sysinfo);
+	}
+
+	if (lpConn)
+		lpConn->toFree();
+
+	return iReturnCode;
+}
+
+/*******************************************************************************
+ * 功能：更新指纹数据
+*******************************************************************************/
+int UpdateFingerImage(IAS2Context* lpContext,IF2UnPacker * lpInUnPacker,IF2Packer * lpOutPacker)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		sql_context ctx = NULL;
+		//PRO*C变量声明
+		int p_pr_id = 0;
+		int v_error_no = 0;
+		char v_error_info[1025] = {0};
+		int v_error_id = 0;
+		char v_error_sysinfo[1025] = {0};
+		
+		OCIClobLocator *clob;
+		char * pBuf = NULL;
+		int iBufLen = 0;
+		
+		varchar *pNewBuf = NULL;
+		int iNewBufLen = 0;
+		unsigned int ClobLen = 0, WriteAmt = 0, Offset = 0;
+		
+		int operator_no = 0;
+		int finger_type = 0;
+		
+		int iReturnCode = 0;
+	EXEC SQL END DECLARE SECTION;
+	
+	struct sqlca sqlca;	
+	char v_error_pathinfo[4001] = {0};
+	    
+    pBuf = (char *)lpInUnPacker->GetRaw("finger_image", &iBufLen);
+    operator_no = lpInUnPacker->GetInt("operator_no");
+    finger_type = lpInUnPacker->GetInt("finger_type");
+    
+    IConnection * lpConn = lpContext->GetDBConnection(O3DB);
+
+	if(lpConn)
+	{
+		ctx = lpConn->getSQLContext();
+
+		if (ctx)
+		{
+			EXEC SQL CONTEXT USE :ctx;
+			    
+            EXEC SQL ALLOCATE :clob;
+            EXEC SQL select finger_image into :clob from jc_tfingerimage t
+                 where t.operator_no=:operator_no 
+                   and t.finger_type=:finger_type
+                   for update;
+            EXEC SQL LOB  OPEN  :clob READ WRITE;//必须用READ WRITE打开，不然会报错的
+            
+            //分配内存
+            iNewBufLen = iBufLen + 4 + 2; 
+            pNewBuf = (varchar *)malloc(iNewBufLen);
+            memset(pNewBuf, 0, iNewBufLen);
+            
+            //拷贝数据
+            strcat((char *)pNewBuf->arr, pBuf);
+            pNewBuf->arr[iBufLen + 1] = '\0';
+            pNewBuf->len = iBufLen;
+            
+            //写入clob字段数据
+            WriteAmt = iBufLen + 1;
+            Offset = 1;   
+            EXEC SQL LOB WRITE ONE :WriteAmt FROM :pNewBuf
+                 WITH LENGTH :WriteAmt INTO :clob AT :Offset;
+            
+            //释放资源
+            free(pNewBuf);
+            EXEC SQL LOB CLOSE :clob;
+            EXEC SQL FREE :clob;
+
+			if (CheckDbLinkMethod(lpConn,SQLCODE) < 0)
+			{
+				if ((SQLCODE<= ERR_DB_NO_CONTINUE_FETCH) && (SQLCODE>= ERR_DB_FAILOVER_NETWORK_OPER_FAIL))
+				{
+					iReturnCode = SQLCODE;
+					v_error_no = SQLCODE;
+					hs_strncpy(v_error_info,sqlca.sqlerrm.sqlerrmc,sqlca.sqlerrm.sqlerrml);
+					v_error_id = SQLCODE;
+					hs_strncpy(v_error_sysinfo,sqlca.sqlerrm.sqlerrmc,sqlca.sqlerrm.sqlerrml);
+					EXEC SQL rollback;
+
+					goto svr_end;
+				}
+
+				lpConn->setErrMessage(HSDB_CONNECTION_STATUS_DISCONN,SQLCODE,sqlca.sqlerrm.sqlerrmc);
+			}
+
+			if (SQLCODE == OK_SUCCESS || SQLCODE == ERR_SELECTNODATA || SQLCODE == ERR_GETPROCOUTPUTERROR)
+
+			{
+				EXEC SQL commit;
+
+			}
+			else
+			{
+				iReturnCode = ERR_611061;
+				v_error_no   = ERR_611061;
+				hs_snprintf(v_error_info,CNST_ERRORINFO_LEN, "%s","p_operator_no");
+				v_error_id   = SQLCODE;
+				hs_strncpy(v_error_sysinfo,sqlca.sqlerrm.sqlerrmc,sqlca.sqlerrm.sqlerrml);
+
+				EXEC SQL rollback;
+				goto svr_end;
+
+			}
+		}
+		else
+		{
+			iReturnCode = ERR_SYS_BUSI_GET_CONTEXT_FAIL;
+			v_error_no = ERR_SYS_BUSI_GET_CONTEXT_FAIL;
+			hs_strcpy(v_error_info, "系统忙(上下文获取失败)");
+			v_error_id   = lpConn->getErrNo();
+			sprintf(v_error_sysinfo,"%s", lpConn->getErrInfo());
+			goto svr_end;
+		}
+
+	}
+	else
+	{
+		iReturnCode = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+		v_error_no = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+		sprintf(v_error_info, "系统忙(数据库连接[%s]无法获取).", O3DB);
+		v_error_id = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+		goto svr_end;
+	}
+
+
+	goto svr_end;
+svr_end:
+
+	if (iReturnCode == OK_SUCCESS || iReturnCode == ERR_SYSWARNING)
+	{}
+	else
+	{
+		GetErrorInfo(lpContext, v_error_no, v_error_info);
+		SystemErrorPacker(lpOutPacker,v_error_pathinfo,v_error_no,v_error_info);
+		WriteSystemLog(lpContext,v_error_pathinfo,v_error_no,v_error_info,v_error_id,v_error_sysinfo);
+	}
+
+	if (lpConn)
+		lpConn->toFree();
+
+	return iReturnCode;
+}

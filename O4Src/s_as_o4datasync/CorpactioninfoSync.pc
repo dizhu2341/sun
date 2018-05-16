@@ -1,0 +1,253 @@
+#include "CorpactioninfoSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CCorpactioninfoSync::CCorpactioninfoSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tcorpactioninfo");
+    strcpy(m_sSrcView, "VO4JC_CORPACTIONINFO");
+    strcpy(m_sTmpTable, "sync_corpactioninfo");
+    strcpy(m_sDstTable, "jc_tcorpactioninfo");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CCorpactioninfoSync::~CCorpactioninfoSync()
+{
+}
+
+bool CCorpactioninfoSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct CorpactioninfoRecord
+    {
+        int corpaction_group_no[BATCH_ROWS];
+        int intergroup_no[BATCH_ROWS];
+        int modify_no[BATCH_ROWS];
+        int corpaction_no[BATCH_ROWS];
+        char market_no[BATCH_ROWS][2];
+        char report_code[BATCH_ROWS][33];
+        char business_type[BATCH_ROWS][4];
+        char manvol_type[BATCH_ROWS][2];
+        int ex_date[BATCH_ROWS];
+        int publish_date[BATCH_ROWS];
+        double dividend_price[BATCH_ROWS];
+        double issue_price[BATCH_ROWS];
+        double stock_rate[BATCH_ROWS];
+        double split_rate[BATCH_ROWS];
+        char settle_currency_no[BATCH_ROWS][4];
+        double tax_price[BATCH_ROWS];
+        double tax_rate[BATCH_ROWS];
+        double face_value[BATCH_ROWS];
+        char vc_scrip_code[BATCH_ROWS][33];
+        int scripstart_date[BATCH_ROWS];
+        int scripend_date[BATCH_ROWS];
+        char remark_long[BATCH_ROWS][4001];
+        char valid_flag[BATCH_ROWS][2];
+        char process_flag[BATCH_ROWS][2];
+        int record_date[BATCH_ROWS];
+        char year_type[BATCH_ROWS][2];
+        int execute_year[BATCH_ROWS];
+    } CorpactioninfoRecord;
+    CorpactioninfoRecord *lpCorpactioninfoRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpCorpactioninfoRecord = new CorpactioninfoRecord();
+    if (NULL == lpCorpactioninfoRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【CorpactioninfoRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpCorpactioninfoRecord, 0, sizeof (CorpactioninfoRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select corpaction_group_no, intergroup_no, modify_no, corpaction_no, market_no, report_code, business_type, manvol_type, ex_date, publish_date, dividend_price, issue_price, stock_rate, split_rate, settle_currency_no, tax_price, 
+                    tax_rate, face_value, vc_scrip_code, scripstart_date, scripend_date, remark_long, valid_flag, process_flag, record_date, year_type, execute_year 
+                    from VO4JC_CORPACTIONINFO;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpCorpactioninfoRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpCorpactioninfoRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpCorpactioninfoRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_corpactioninfo(corpaction_group_no, intergroup_no, modify_no, corpaction_no, market_no, report_code, business_type, manvol_type, ex_date, publish_date, dividend_price, issue_price, stock_rate, split_rate, settle_currency_no, tax_price, tax_rate, face_value, vc_scrip_code, scripstart_date, scripend_date, remark_long, valid_flag, process_flag, record_date, year_type, execute_year)
+             values(:lpCorpactioninfoRecord->corpaction_group_no,
+										:lpCorpactioninfoRecord->intergroup_no,
+										:lpCorpactioninfoRecord->modify_no,
+										:lpCorpactioninfoRecord->corpaction_no,
+										rtrim(:lpCorpactioninfoRecord->market_no),
+										rtrim(:lpCorpactioninfoRecord->report_code),
+										rtrim(:lpCorpactioninfoRecord->business_type),
+										rtrim(:lpCorpactioninfoRecord->manvol_type),
+										:lpCorpactioninfoRecord->ex_date,
+										:lpCorpactioninfoRecord->publish_date,
+										:lpCorpactioninfoRecord->dividend_price,
+										:lpCorpactioninfoRecord->issue_price,
+										:lpCorpactioninfoRecord->stock_rate,
+										:lpCorpactioninfoRecord->split_rate,
+										rtrim(:lpCorpactioninfoRecord->settle_currency_no),
+										:lpCorpactioninfoRecord->tax_price,
+										:lpCorpactioninfoRecord->tax_rate,
+										:lpCorpactioninfoRecord->face_value,
+										rtrim(:lpCorpactioninfoRecord->vc_scrip_code),
+										:lpCorpactioninfoRecord->scripstart_date,
+										:lpCorpactioninfoRecord->scripend_date,
+										rtrim(:lpCorpactioninfoRecord->remark_long),
+										rtrim(:lpCorpactioninfoRecord->valid_flag),
+										rtrim(:lpCorpactioninfoRecord->process_flag),
+										:lpCorpactioninfoRecord->record_date,
+										rtrim(:lpCorpactioninfoRecord->year_type),
+										:lpCorpactioninfoRecord->execute_year);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpCorpactioninfoRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpCorpactioninfoRecord;
+    return true;
+}
+
+bool CCorpactioninfoSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;  
+    if (!DropTableIndex())
+        return false;
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_START_INTER_CODE NUMBER := 0;"
+            "  V_INIT_TYPE       CHAR(1);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  V_INIT_DATE   NUMBER(8);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  V_INIT_TYPE      := '%c';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  SELECT MAX(TO_NUMBER(SUBSTR(TO_CHAR(INTER_CODE), 1, 7)))"
+            "    INTO V_START_INTER_CODE"
+            "    FROM (SELECT INTER_CODE,"
+            "                 CASE"
+            "                   WHEN MARKET_NO IN (1, 2, 5) AND LENGTH(REPORT_CODE) <= 6 AND"
+            "                        REGEXP_LIKE(REPORT_CODE, '^[0-9]+$') THEN"
+            "                    1"
+            "                   ELSE"
+            "                    0"
+            "                 END MM"
+            "            FROM JC_TCONVERTINTERCODE)"
+            "   WHERE MM = 0;"
+            "  V_START_INTER_CODE := CASE"
+            "                          WHEN V_START_INTER_CODE IS NULL THEN"
+            "                           0"
+            "                          ELSE"
+            "                           V_START_INTER_CODE - 1000000"
+            "                        END;"
+            ""
+            "  IF V_INIT_TYPE <> '1' THEN"
+            "    EXECUTE IMMEDIATE 'INSERT INTO JC_TCONVERTINTERCODE(MARKET_NO,REPORT_CODE,INTER_CODE)' ||"
+            "                      '  SELECT V.MARKET_NO,' ||"
+            "                      '         V.REPORT_CODE,' ||"
+            "                      '         SF_CREATE_INTERCODE_WITH_INDEX(V.MARKET_NO,' ||"
+            "                      '                                        V.REPORT_CODE,' ||"
+            "                      '                                        '||V_START_INTER_CODE||' + V.RN)' ||"
+            "                      '    FROM (SELECT T1.*, T2.INTER_CODE,ROW_NUMBER() OVER(ORDER BY CASE WHEN t2.INTER_CODE IS NULL THEN 1 ELSE 2 END) RN' ||"
+            "                      '            FROM (SELECT DISTINCT A.MARKET_NO MARKET_NO_SRC,' ||"
+            "                      '                                  B.MARKET_NO,' ||"
+            "                      '                                  A.REPORT_CODE' ||"
+            "                      '                    FROM SYNC_ETFBASICINFO A, JC_TCONVERTMARKETNO B' ||"
+            "                      '                   WHERE A.MARKET_NO = B.MARKET_NO_SRC) T1' ||"
+            "                      '            LEFT JOIN JC_TCONVERTINTERCODE T2' ||"
+            "                      '              ON T1.MARKET_NO = T2.MARKET_NO' ||"
+            "                      '             AND T1.REPORT_CODE = T2.REPORT_CODE) V' ||"
+            "                      '             WHERE V.INTER_CODE IS NULL';"
+            "  END IF;"
+            " SELECT INIT_DATE INTO V_INIT_DATE FROM JC_TSYSTEMINFO;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "   '   CORPACTION_GROUP_NO,INTERGROUP_NO,MODIFY_NO,CORPACTION_NO,MARKET_NO,INTER_CODE,BUSINESS_TYPE,MANVOL_TYPE,EX_DATE,' ||"
+            "	'	BACK_DATE,DIVIDEND_PRICE,SHAREOUT_PRICE,STOCK_RATE,SPLIT_RATE,SETTLE_CURRENCY_NO,TAX_PRICE,TAX_RATE,SPLIT_FACE_VALUE,' ||"
+            "	'	VC_SCRIP_CODE,SCRIPSTART_DATE,SCRIPEND_DATE,REMARK_LONG,SYS_DATE,VALID_FLAG,PROCESS_FLAG,RECORD_DATE,YEAR_TYPE,EXECUTE_YEAR)' ||"
+            "	'	SELECT T1.CORPACTION_GROUP_NO, T1.INTERGROUP_NO, T1.MODIFY_NO, T1.CORPACTION_NO, T2.MARKET_NO, T3.INTER_CODE,' ||"
+            "	'	NVL(T1.BUSINESS_TYPE,'' ''), NVL(T1.MANVOL_TYPE,'' ''), T1.EX_DATE, T1.PUBLISH_DATE, T1.DIVIDEND_PRICE, T1.ISSUE_PRICE, T1.STOCK_RATE, T1.SPLIT_RATE,' ||"
+            "	'	NVL(T1.SETTLE_CURRENCY_NO,''CNY''), T1.TAX_PRICE, T1.TAX_RATE, T1.FACE_VALUE, NVL(T1.VC_SCRIP_CODE,'' ''), T1.SCRIPSTART_DATE, T1.SCRIPEND_DATE, NVL(T1.REMARK_LONG,'' ''),' ||"
+            "	'	'||V_INIT_DATE||', '   ||"
+            "	'	NVL(T1.VALID_FLAG,'' ''), NVL(T1.PROCESS_FLAG,'' ''), T1.RECORD_DATE, NVL(T1.YEAR_TYPE,'' ''), T1.EXECUTE_YEAR' ||"
+            "	'	FROM SYNC_CORPACTIONINFO T1,JC_TCONVERTMARKETNO T2 , JC_TCONVERTINTERCODE T3' ||"
+            "	'	WHERE T1.MARKET_NO = T2.MARKET_NO_SRC' ||"
+            "	'	AND T1.REPORT_CODE = T3.REPORT_CODE' ||"
+            "	'	AND T2.MARKET_NO = T3.MARKET_NO '; "
+            "  COMMIT;"
+            "END;", m_sDstTable, m_cSyncFlag);
+
+    if (m_cSyncFlag == '2')
+    {
+        hsLockCreateInterCode();
+    }
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (m_cSyncFlag == '2')
+    {
+        hsUnlockCreateInterCode();
+    }
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

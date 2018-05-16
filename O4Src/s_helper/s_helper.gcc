@@ -1,0 +1,94 @@
+#功能组件 makefile for linux
+#目标: s_helper.gcc
+FBASE_HOME = ..
+
+#obj扩展名定义$TO
+TO=o
+
+#要编译的组件名,构成组件的obj文件定义
+FC1 = s_helper
+FC2 = s_libpublic
+OBJS1 =  $(FC1).$(TO)
+
+ifneq (,$(findstring solaris,$(OSTYPE)))
+OUTDIR = $(FBASE_HOME)/appcom
+else
+OUTDIR = $(FBASE_HOME)/appcom
+endif
+
+#编译器命令名
+PROC=$(ORACLE_HOME)/bin/proc
+CC = g++
+
+#预编译oracle连接参数
+USERID=hs_all/hundsun@db_user
+
+#预编译选项
+CPP_PROFLAGS=ireclen=132 oreclen=132 \
+	select_error=yes \
+	mode=ansi \
+	userid=$(USERID) \
+	SQLCHECK=SYNTAX \
+	def_sqlcode=YES \
+	THREADS=YES \
+	CODE=CPP \
+	char_map=STRING \
+	CPP_SUFFIX=cpp \
+	PARSE=PARTIAL \
+	CLOSE_ON_COMMIT=YES \
+	MAXOPENCURSORS=60 \
+	DEFINE=USE_PRO_C \
+	HOLD_CURSOR=YES \
+	PREFETCH=200 \
+	include=$(ORACLE_HOME)/precomp/public  \
+	include=$(ORACLE_HOME)/oci/include  \
+	include=$(FBASE_HOME) \
+	include=/usr/lib/gcc-lib/i386-redhat-linux/3.2.3/include
+
+#编译选项
+
+#include路径
+INCDIR=-I$(HOME)/src
+
+#(-Dxxx should be added to DEFS macro):
+DEFS =-D OS_UNIX
+
+#option 编译，连接选项
+CFLAGS = -c -fPIC $(DEFS)
+LDFLAGS = -shared
+STDLIBS = -lc - lnsl - ldl - lm - lstdc + -lpthread
+LIBPATH=$(OUTDIR)
+DBLIB= -L$(ORACLE_HOME)/lib -lclntsh -L$(ORACLE_HOME)/lib -lsql$(ORA_VER)
+HSLIB = -L$(OUTDIR) -l$(FC2)
+
+#头文件路径
+INCLALL=-I$(FBASE_HOME)  -I $(ORACLE_HOME)/precomp/public -I $(ORACLE_HOME)/oci/include -I /usr/lib/gcc-lib/i386-redhat-linux/3.2.2/include
+
+#debug版本
+ifdef _DEBUG
+DEFS = -D_DEBUG
+CFLAGS = -c -g -fPIC $(DEFS)
+endif
+#ifdef _HSDEBUG
+#HSDEFS = -D _HSDEBUG
+#CFLAGS = -c -fPIC $(DEFS) $(HSDEFS) 
+#endif
+
+all:$(FC1)
+
+$(FC1):$(OBJS1)
+	$(CC)  $(LDFLAGS) $(OBJS1) $(HSLIB) -o$(OUTDIR)/lib$(FC1).so $(LIBS) $(EXP)
+
+$(FC1).$(TO):$(FC1).cpp
+	$(CC) $(CFLAGS) $(FC1).cpp $(INCDIR)
+
+$(FC2).$(TO):$(FC2).cpp
+	$(CC) $(CFLAGS) $(FC2).cpp $(INCDIR)
+	
+cleanobj:
+	rm -fr *.o core *~ cxx_repository
+clean: cleanobj
+	rm -f $(OUTDIR)/$(ASPACK_DLL)
+doxygen:
+	doxygen doxygen.cfg
+	-del *.obj

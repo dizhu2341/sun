@@ -1,0 +1,25 @@
+# 1、准备工作，编译方式、目标文件名、依赖库路径的定义。
+CC = g++
+CFLAGS  := -D OS_UNIX -g 
+TRAGET  := libs_as_o4rjdatasync.so
+SOURCE  := $(wildcard *.cpp )
+OBJS    := $(patsubst %.cpp,%.o, $(SOURCE))
+
+OUTDIR = $(HOME)/appcom
+INCLUDE = -I$(HOME)/src -I./ 
+LIB =  -L$(OUTDIR) -ls_liblogpublic -ls_glbfunction_or -ls_jc_public -ls_libpublic -ls_helper -lc -lnsl -ldl -lm -lstdc++ -lpthread -ls_as_jc_o4initflow.10 -ls_as_jc_o4rjflow.10 -ls_o4initmgr.10 -lwritedlog
+
+# 2. 生成.o文件 
+%.o : %.cpp
+	$(CC) $(CFLAGS) $(INCLUDE) -fPIC -c $< -o $@ 
+
+all : $(TRAGET) 
+
+# 3. 生成动态库文件
+$(TRAGET) : $(OBJS)	
+	g++ -shared $(OBJS) $(LIB) -o $(HOME)/appcom/$@ 
+	
+
+# 4. 删除中间过程生成的文件 
+clean:
+	rm -f *.o

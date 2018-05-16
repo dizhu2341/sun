@@ -1,0 +1,603 @@
+#include "StockSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CStockSync::CStockSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tstockinfo");
+    strcpy(m_sSrcView, "VO4JC_STOCKINFO");
+    strcpy(m_sTmpTable, "sync_stock");
+    strcpy(m_sDstTable, "jc_tstock");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CStockSync::~CStockSync()
+{
+
+}
+
+bool CStockSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    //声明结构体变量
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+
+    typedef struct StockRecord
+    {
+        unsigned int lineno[BATCH_ROWS];
+        char vc_inter_code[BATCH_ROWS][9];
+        char c_market_no[BATCH_ROWS][2];
+        char vc_report_code[BATCH_ROWS][33];
+        char vc_stock_name[BATCH_ROWS][129];
+        char c_asset_class[BATCH_ROWS][2];
+        char c_stock_type[BATCH_ROWS][3]; //O3把stock_type从char(1)调成了varchar2(2)
+        char vc_mixed_type[BATCH_ROWS][101];
+        double en_uplimited_ratio[BATCH_ROWS];
+        double en_downlimited_ratio[BATCH_ROWS];
+        double en_uplimited_price[BATCH_ROWS];
+        double en_downlimited_price[BATCH_ROWS];
+        char vc_frozen_code[BATCH_ROWS][33];
+        char c_frozen_code_market[BATCH_ROWS][2];
+        char vc_assign_code[BATCH_ROWS][33];
+        char c_assign_code_market[BATCH_ROWS][2];
+        char vc_asset_relative_code[BATCH_ROWS][33];
+        char c_asset_relative_code_market[BATCH_ROWS][2];
+        char vc_match_relative1_code[BATCH_ROWS][33];
+        char c_match_relative1_code_market[BATCH_ROWS][2];
+        char vc_match_relative2_code[BATCH_ROWS][33];
+        char c_match_relative2_code_market[BATCH_ROWS][2];
+        char vc_price_relative_code[BATCH_ROWS][33];
+        char c_price_relative_code_market[BATCH_ROWS][2];       
+        char vc_reference_fa_code[BATCH_ROWS][33];
+        char c_reference_fa_code_market[BATCH_ROWS][2];  
+        double l_total_amount[BATCH_ROWS];
+        double l_turnover_amount[BATCH_ROWS];
+        double en_repay_year[BATCH_ROWS];
+        double en_yesterday_close_price[BATCH_ROWS];
+        double l_company_id[BATCH_ROWS];
+        char c_stop_flag[BATCH_ROWS][2];
+        double en_last_price[BATCH_ROWS];
+        double en_reference_price[BATCH_ROWS];
+        double l_publish_date[BATCH_ROWS];
+        double l_turnover_date[BATCH_ROWS];
+        double l_total_lock_days[BATCH_ROWS];
+        double l_left_lock_days[BATCH_ROWS];
+        double en_face_values[BATCH_ROWS];
+        double l_listing_date[BATCH_ROWS];
+        double l_wx_listing_date[BATCH_ROWS];
+        char c_long_stop_flag[BATCH_ROWS][2];
+        double en_fair_price2[BATCH_ROWS];
+        char vc_mother_company_ids[BATCH_ROWS][2001];
+        double l_buy_unit[BATCH_ROWS];
+        double l_sale_unit[BATCH_ROWS];
+        char vc_trade_currency_no[BATCH_ROWS][4];
+        char vc_settle_currency_no[BATCH_ROWS][4];
+        char vc_contractid_id[BATCH_ROWS][21];
+        char c_bs_flag[BATCH_ROWS][2];
+        double en_estimate_prob[BATCH_ROWS];
+        double l_market_deal_amount[BATCH_ROWS];
+        double en_market_deal_balance[BATCH_ROWS];
+        char stock_fee_type[BATCH_ROWS][2];
+        char hzjy_flag[BATCH_ROWS][2];
+        char trade_active_flag[BATCH_ROWS][2];
+        char permit_busin_classes[BATCH_ROWS][4001];
+        double avg_price[BATCH_ROWS];
+        double chinabond_fa_price[BATCH_ROWS];
+        double chinaclear_fa_price[BATCH_ROWS];
+        double uplimited_amount[BATCH_ROWS];
+        double downlimited_amount[BATCH_ROWS];
+    } StockRecord;
+    StockRecord *lpStockRecord;
+    EXEC SQL END DECLARE SECTION;
+    lpStockRecord = new StockRecord();
+    if (NULL == lpStockRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【StockRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpStockRecord, 0, sizeof (StockRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR
+    SELECT /*+ FULL(T) */            
+              ROWNUM LINENO,
+              VC_INTER_CODE,            MARKET_NO,                      REPORT_CODE,                    STOCK_NAME,             ASSET_CLASS,    STOCK_TYPE,             MIXED_TYPES,
+              UPLIMITED_RATIO,          DOWNLIMITED_RATIO,              UPLIMITED_PRICE,                DOWNLIMITED_PRICE,      FROZEN_CODE,    FROZEN_CODE_MARKET,     ASSIGN_CODE,
+              ASSIGN_CODE_MARKET,       ASSET_RELATIVE_CODE,            ASSET_RELATIVE_CODE_MARKET,     MATCH_RELATIVE1_CODE,   MATCH_RELATIVE1_CODE_MARKET,   
+              MATCH_RELATIVE2_CODE,     MATCH_RELATIVE2_CODE_MARKET,    PRICE_RELATIVE_CODE,            PRICE_RELATIVE_CODE_MARKET,             REFERENCE_FA_CODE,      REFERENCE_FA_CODE_MARKET,
+              TOTAL_SHARE,              OUTSTANDING_SHARE,              PE,                             YESTERDAY_CLOSE_PRICE,
+              ISSUER_ID,                STOCK_STOP_FLAG,                LAST_PRICE,                     REFERENCE_PRICE,        PUBLISH_DATE,    TURNOVER_DATE,    TOTAL_LOCK_DAYS,
+              LEFT_LOCK_DAYS,           FACE_VALUE,                     LISTING_DATE,                   WX_LISTING_DATE,        LONG_STOP_FLAG,  FAIR_PRICE2,      MOTHER_COMPANY_IDS,
+              BUY_UNIT,                 SALE_UNIT,                      TRADE_CURRENCY_NO,              SETTLE_CURRENCY_NO,     CONTRACT_ID,     TRADE_FLAG,       ESTIMATE_PROB,			
+              MARKET_DEAL_AMOUNT,       MARKET_DEAL_BALANCE,            STOCK_FEE_TYPE,                 HZJY_FLAG,              TRADE_ACTIVE_FLAG,    PERMIT_BUSIN_CLASSES,           AVG_PRICE,
+              CHINABOND_FA_PRICE,        CHINACLEAR_FA_PRICE, uplimit_amount, downlimit_amount
+              FROM	VO4JC_STOCKINFO T;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpStockRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpStockRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpStockRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+            insert into sync_stock(
+                    lineno,
+                    vc_inter_code,           c_market_no,            vc_report_code,           vc_stock_name,
+                    c_asset_class,           c_stock_type,            vc_mixed_type,          en_uplimited_ratio,       en_downlimited_ratio,
+                    en_uplimited_price,      en_downlimited_price,    vc_frozen_code,         frozen_code_market,     vc_assign_code,             assign_code_market,   vc_asset_relative_code,
+                    asset_relative_code_market,       vc_match_relative1_code,                match_relative1_code_market,                vc_match_relative2_code,       match_relative2_code_market, 
+                    vc_price_relative_code,            price_relative_code_market,          vc_reference_fa_code,                          reference_fa_code_market,     l_total_amount,           l_turnover_amount,
+                    en_repay_year,           en_yesterday_close_price,l_company_id,           c_stop_flag,
+                    en_last_price,           en_reference_price,       l_publish_date,
+                    l_turnover_date,         l_total_lock_days,       l_left_lock_days,      en_face_values,         l_listing_date,           l_wx_listing_date,
+                    c_long_stop_flag,        en_fair_price2,          vc_mother_company_ids,    l_buy_unit,               l_sale_unit,
+                    vc_trade_currency_no,   vc_settle_currency_no,    vc_contractid_id,         c_bs_flag,
+                    en_estimate_prob,        l_market_deal_amount,   en_market_deal_balance,    stock_fee_type,         hzjy_flag,              trade_active_flag,    permit_busin_classes,           avg_price,
+                    chinabond_fa_price,     chinaclear_fa_price, uplimited_amount, downlimited_amount)
+             values(:lpStockRecord->lineno,
+                    rtrim(:lpStockRecord->vc_inter_code),
+                    rtrim(:lpStockRecord->c_market_no),
+                    rtrim(:lpStockRecord->vc_report_code),
+                    rtrim(:lpStockRecord->vc_stock_name),
+                    rtrim(:lpStockRecord->c_asset_class),
+                    rtrim(:lpStockRecord->c_stock_type),
+                    rtrim(:lpStockRecord->vc_mixed_type),
+                    :lpStockRecord->en_uplimited_ratio,
+                    :lpStockRecord->en_downlimited_ratio,
+                    :lpStockRecord->en_uplimited_price,
+                    :lpStockRecord->en_downlimited_price,
+                    rtrim(:lpStockRecord->vc_frozen_code),
+                    rtrim(:lpStockRecord->c_frozen_code_market),
+                    rtrim(:lpStockRecord->vc_assign_code),
+                    rtrim(:lpStockRecord->c_assign_code_market),
+                    rtrim(:lpStockRecord->vc_asset_relative_code),
+                    rtrim(:lpStockRecord->c_asset_relative_code_market),
+                    rtrim(:lpStockRecord->vc_match_relative1_code),
+                    rtrim(:lpStockRecord->c_match_relative1_code_market),
+                    rtrim(:lpStockRecord->vc_match_relative2_code),
+                    rtrim(:lpStockRecord->c_match_relative2_code_market),
+                    rtrim(:lpStockRecord->vc_price_relative_code),
+                    rtrim(:lpStockRecord->c_price_relative_code_market),
+                    rtrim(:lpStockRecord->vc_reference_fa_code),
+                    rtrim(:lpStockRecord->c_reference_fa_code_market),
+                    :lpStockRecord->l_total_amount,
+                    :lpStockRecord->l_turnover_amount,
+                    :lpStockRecord->en_repay_year,
+                    :lpStockRecord->en_yesterday_close_price,
+                    :lpStockRecord->l_company_id,
+                    rtrim(:lpStockRecord->c_stop_flag),
+                    :lpStockRecord->en_last_price,
+                    :lpStockRecord->en_reference_price,
+                    :lpStockRecord->l_publish_date,
+                    :lpStockRecord->l_turnover_date,
+                    :lpStockRecord->l_total_lock_days,
+                    :lpStockRecord->l_left_lock_days,
+                    :lpStockRecord->en_face_values,
+                    :lpStockRecord->l_listing_date,
+                    :lpStockRecord->l_wx_listing_date,
+                    rtrim(:lpStockRecord->c_long_stop_flag),
+                    :lpStockRecord->en_fair_price2,
+                    :lpStockRecord->vc_mother_company_ids,
+                    :lpStockRecord->l_buy_unit,
+                    :lpStockRecord->l_sale_unit,
+                    rtrim(:lpStockRecord->vc_trade_currency_no),
+                    rtrim(:lpStockRecord->vc_settle_currency_no),
+                    rtrim(:lpStockRecord->vc_contractid_id),
+                    :lpStockRecord->c_bs_flag,
+                    :lpStockRecord->en_estimate_prob,
+                    :lpStockRecord->l_market_deal_amount,
+                    :lpStockRecord->en_market_deal_balance,
+                    rtrim(:lpStockRecord->stock_fee_type),
+                    rtrim(:lpStockRecord->hzjy_flag),
+                    rtrim(:lpStockRecord->trade_active_flag),
+                    rtrim(:lpStockRecord->permit_busin_classes),
+                    :lpStockRecord->avg_price,
+                    :lpStockRecord->chinabond_fa_price,    
+                    :lpStockRecord->chinaclear_fa_price,
+                    :lpStockRecord->uplimited_amount, 
+                    :lpStockRecord->downlimited_amount);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpStockRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    delete lpStockRecord;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    return true;
+}
+
+bool CStockSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始导入数据到O4表【" << m_sDstTable << "】");
+    
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[20480] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+
+    if (!DropTableIndex())
+        return false;
+
+    sprintf(sExecSql, "DECLARE"
+            "  V_START_INTER_CODE NUMBER := 0;"
+            "  V_ALL_DATE         NUMBER ;"
+            "  V_INIT_TYPE       CHAR(1);"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  V_BUSINESS_DATE   NUMBER(8);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  V_INIT_TYPE      := '%c';"
+            ""
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME_O4;"
+            ""
+            "  SELECT MAX(TO_NUMBER(SUBSTR(TO_CHAR(INTER_CODE), 1, 7)))"
+            "    INTO V_START_INTER_CODE"
+            "    FROM (SELECT INTER_CODE,"
+            "                 CASE"
+            "                   WHEN MARKET_NO IN (1, 2, 5) AND LENGTH(REPORT_CODE) <= 6 AND"
+            "                        REGEXP_LIKE(REPORT_CODE, '^[0-9]+$') THEN"
+            "                    1"
+            "                   ELSE"
+            "                    0"
+            "                 END MM"
+            "            FROM JC_TCONVERTINTERCODE)"
+            "   WHERE MM = 0;"
+            "  V_START_INTER_CODE := CASE"
+            "                          WHEN V_START_INTER_CODE IS NULL THEN"
+            "                           0"
+            "                          ELSE"
+            "                           V_START_INTER_CODE - 1000000"
+            "                        END;"
+            " SELECT T.INIT_DATE INTO V_BUSINESS_DATE FROM JC_TSYSTEMINFO T;"
+            ""
+            "  EXECUTE IMMEDIATE 'INSERT INTO '||V_TABLE_NAME_O4||' (INTER_CODE,SYS_DATE, ' ||"
+            "                    'MARKET_NO, ' || 'REPORT_CODE, ' ||"
+            "                    'STOCK_NAME, ' || 'STOCK_FULLNAME, ' || 'ASSET_TYPE, ' ||"
+            "                    'STOCK_TYPE, ' || 'MIXED_TYPES, ' ||"
+            "                    'UPLIMITED_RATIO, ' || 'DOWNLIMITED_RATIO, ' ||"
+            "                    'UPLIMITED_PRICE, ' || 'DOWNLIMITED_PRICE, ' ||"
+            "                    'PRICE_ENTER_TYPE, ' || 'FROZEN_CODE, ' ||"
+            "                    'ASSIGN_CODE, ' || 'ASSET_RELATIVE_CODE, ' ||"
+            "                    'MATCH_RELATIVE1_CODE, ' || 'MATCH_RELATIVE2_CODE, ' ||"
+            "                    'PRICE_RELATIVE_CODE, REFERENCE_FA_CODE,   TOTAL_SHARE, ' ||"
+            "                    'OUTSTANDING_SHARE, ' || 'CLASSFIED_SHARE, ' || 'PE, ' ||"
+            "                    'YESTERDAY_CLOSE_PRICE, ' || 'ISSUER_ID, ' ||"
+            "                    'STOCK_STOP_FLAG, ' || 'LAST_PRICE, ' ||"
+            "                    'REFERENCE_PRICE, ' || 'PUBLISH_DATE, ' ||"
+            "                    'TURNOVER_DATE, ' || 'TOTAL_LOCK_DAYS, ' ||"
+            "                    'LEFT_LOCK_DAYS, ' || 'ISIN_CODE,  ' ||"
+            "                    'FACE_VALUE, ' || 'LISTING_DATE, ' ||"
+            "                    'WX_LISTING_DATE, ' || 'LONG_STOP_FLAG, ' ||"
+            "                    'FAIR_PRICE2, ' || 'MOTHER_COMPANY_IDS, ' ||"
+            "                    'BUY_UNIT, ' || 'SALE_UNIT, ' ||"
+            "                    'TRADE_CURRENCY_NO, ' ||"
+            "                    'SETTLE_CURRENCY_NO, '  ||"
+            "                    'TRADE_PLATFORM_LIST, ' ||"
+            "                    'RIGHT_PRICE, ' || 'MAX_RIGHTPRICE, ' ||"
+            "                    'VOTING_RIGHT, ' || 'CONTRACT_IDENT_CODE, ' ||"
+            "                    'STOCK_STATUS, ' || 'TRADE_FLAG, ' ||"
+            "                    'ONLINE_ESTIMATED_RATIO, ' || 'MARKET_DEAL_AMOUNT, ' ||"
+            "                    'MARKET_DEAL_BALANCE,STOCK_FEE_TYPE,HZJY_FLAG,TRADE_ACTIVE_FLAG,PERMIT_BUSIN_CLASSES,AVG_PRICE,CHINABOND_FA_PRICE,CHINACLEAR_FA_PRICE,PROTOCOL_PLATFORM_FLAG, uplimited_amount, downlimited_amount)' || 'WITH V_STOCKINFO AS ' ||"
+            "                    '(SELECT /*+ ordered use_hash(t2) use_hash(t3) full(t1) full(t3) swap_join_inputs(t1) swap_join_inputs(t3) no_swap_join_inputs(t2) */ ' ||"
+            "                    'T2.LINENO, ' || 'T2.VC_INTER_CODE, ' ||"
+            "                    'T2.VC_REPORT_CODE, ' || 'T1.MARKET_NO,T4.MARKET_NO FROZEN_CODE_MARKET,T5.MARKET_NO ASSIGN_CODE_MARKET,T6.MARKET_NO ASSET_RELATIVE_CODE_MARKET,' ||"
+            "                    'T7.MARKET_NO MATCH_RELATIVE1_CODE_MARKET,T8.MARKET_NO MATCH_RELATIVE2_CODE_MARKET,T9.MARKET_NO PRICE_RELATIVE_CODE_MARKET,T10.MARKET_NO REFERENCE_FA_CODE_MARKET, ' ||"
+            "                    'T3.STOCK_TYPE, ' || 'T2.VC_ASSIGN_CODE, ' ||"
+            "                    'T2.VC_FROZEN_CODE, ' || 'T2.VC_ASSET_RELATIVE_CODE, ' ||"
+            "                    'T2.VC_MATCH_RELATIVE1_CODE, ' ||"
+            "                    'T2.VC_MATCH_RELATIVE2_CODE, ' ||"
+            "                    'T2.VC_PRICE_RELATIVE_CODE, ' ||"
+            "                    'T2.VC_REFERENCE_FA_CODE ' ||"
+            "                    'FROM JC_TCONVERTMARKETNO T1, '||V_TABLE_NAME_TMP||' T2, JC_TCONVERTSTOCKTYPE T3,JC_TCONVERTMARKETNO T4, '||"
+            "                    'JC_TCONVERTMARKETNO T5,JC_TCONVERTMARKETNO T6,JC_TCONVERTMARKETNO T7, JC_TCONVERTMARKETNO T8, JC_TCONVERTMARKETNO T9, JC_TCONVERTMARKETNO T10 ' ||"
+            "                    'WHERE T2.C_MARKET_NO = T1.MARKET_NO_SRC ' ||"
+            "                    'AND T3.STOCK_TYPE_SRC = T2.C_STOCK_TYPE AND T2.FROZEN_CODE_MARKET = T4.MARKET_NO_SRC(+)  '  ||"
+            "                    'AND T2.ASSIGN_CODE_MARKET = T5.MARKET_NO_SRC(+) AND T2.ASSET_RELATIVE_CODE_MARKET = T6.MARKET_NO_SRC(+) AND T2.MATCH_RELATIVE1_CODE_MARKET =  T7.MARKET_NO_SRC(+) ' ||"
+            "                    'AND T2.MATCH_RELATIVE2_CODE_MARKET =  T8.MARKET_NO_SRC(+) AND  T2.PRICE_RELATIVE_CODE_MARKET =  T9.MARKET_NO_SRC(+) AND  T2.REFERENCE_FA_CODE_MARKET =  T10.MARKET_NO_SRC(+) ), ' ||"
+            "                    'V_INTER_CODE AS ' || '(SELECT V102.LINENO, ' ||"
+            "                    'V102.STOCK_TYPE, ' || 'V102.MARKET_NO,V102.REPORT_CODE, ' ||"
+            "                    'V102.VC_INTER_CODE, CASE ' ||"
+            "                    'WHEN V102.INTER_CODE IS NOT NULL THEN ' ||"
+            "                    'V102.INTER_CODE ELSE ' ||"
+            "                    'SF_CREATE_INTERCODE_WITH_INDEX(V102.MARKET_NO,V102.REPORT_CODE,'||V_START_INTER_CODE||'+V102.RN) END INTER_CODE ' ||"
+            "                    'FROM (SELECT /*+ no_merge(v101) */ ' ||"
+            "                    'V101.LINENO, ' || 'V101.STOCK_TYPE, ' ||"
+            "                    'V101.VC_INTER_CODE, ' || 'V101.INTER_CODE, ' ||"
+            "                    'V101.MARKET_NO, V101.REPORT_CODE, ' ||"
+            "                    'row_number() over (order by case when inter_code is not null then 2 else 1 end) rn ' ||"
+            "                    'FROM (SELECT /*+ ordered use_hash(v5) no_merge(v5) swap_join_inputs(t4) no_swap_join_inputs(v5) full(t4) */ ' ||"
+            "                    'V5.LINENO, ' || 'V5.STOCK_TYPE, ' ||"
+            "                    'V5.VC_INTER_CODE, ' || 'V5.MARKET_NO, V5.VC_REPORT_CODE REPORT_CODE, T4.INTER_CODE ' ||"
+            "                    'FROM JC_TCONVERTINTERCODE T4, V_STOCKINFO V5 ' ||"
+            "                    'WHERE V5.MARKET_NO = T4.MARKET_NO(+) ' ||"
+            "                    'AND V5.VC_REPORT_CODE = T4.REPORT_CODE(+)) V101) V102), ' ||"
+            "                    'V_ALL_NEW_CODE AS ' ||"
+            "                    '(SELECT /*+ ordered use_hash(v301) no_merge(v301) no_merge(v302) */ ' ||"
+            "                    'V301.LINENO, ' || 'V301.STOCK_TYPE, ' ||"
+            "                    'V301.MARKET_NO, ' || 'V301.VC_INTER_CODE, ' ||"
+            "                    'V301.INTER_CODE, ' || 'V302.ASSIGN_INTER_CODE, ' ||"
+            "                    'V303.FROZEN_INTER_CODE, ' ||"
+            "                    'V304.ASSET_RELATIVE_INTER_CODE, ' ||"
+            "                    'V305.MATCH_RELATIVE1_INTER_CODE, ' ||"
+            "                    'V306.MATCH_RELATIVE2_INTER_CODE, ' ||"
+            "                    'V307.PRICE_RELATIVE_INTER_CODE, ' ||"
+            "                    'V308.REFERENCE_FA_INTER_CODE ' ||"            
+            "                    'FROM (SELECT /*+ ordered use_hash(v202) no_merge(v201) no_merge(v202) */ ' ||"
+            "                    'VC_ASSIGN_CODE, ' || 'V201.LINENO, ' ||"
+            "                    'DECODE(V202.VC_INTER_CODE, NULL, NULL, V202.INTER_CODE) ASSIGN_INTER_CODE ' ||"
+            "                    'FROM V_STOCKINFO V201, V_INTER_CODE V202 ' ||"
+            "                    'WHERE V202.REPORT_CODE = V201.VC_ASSIGN_CODE AND V202.MARKET_NO = V201.ASSIGN_CODE_MARKET ) V302, ' ||"
+            "                    '(SELECT /*+ ordered use_hash(v202) no_merge(v201) no_merge(v202) */ ' ||"
+            "                    'VC_FROZEN_CODE, ' || 'V201.LINENO, ' ||"
+            "                    'DECODE(V202.VC_INTER_CODE, NULL, NULL, V202.INTER_CODE) FROZEN_INTER_CODE ' ||"
+            "                    'FROM V_STOCKINFO V201, V_INTER_CODE V202 ' ||"
+            "                    'WHERE V202.REPORT_CODE = V201.VC_FROZEN_CODE AND V202.MARKET_NO = V201.FROZEN_CODE_MARKET) V303, ' ||"
+            "                    '(SELECT /*+ ordered use_hash(v202) no_merge(v201) no_merge(v202) */ ' ||"
+            "                    'VC_ASSET_RELATIVE_CODE, ' || 'V201.LINENO, ' ||"
+            "                    'DECODE(V202.VC_INTER_CODE, NULL, NULL, V202.INTER_CODE) ASSET_RELATIVE_INTER_CODE ' ||"
+            "                    'FROM V_STOCKINFO V201, V_INTER_CODE V202 ' ||"
+            "                    'WHERE V202.REPORT_CODE = V201.VC_ASSET_RELATIVE_CODE AND V202.MARKET_NO = V201.ASSET_RELATIVE_CODE_MARKET ) V304, ' ||"
+            "                    '(SELECT /*+ ordered use_hash(v202) no_merge(v201) no_merge(v202) */ ' ||"
+            "                    'VC_MATCH_RELATIVE1_CODE, ' || 'V201.LINENO, ' ||"
+            "                    'DECODE(V202.VC_INTER_CODE, NULL, NULL, V202.INTER_CODE) MATCH_RELATIVE1_INTER_CODE ' ||"
+            "                    'FROM V_STOCKINFO V201, V_INTER_CODE V202 ' ||"
+            "                    'WHERE V202.REPORT_CODE = V201.VC_MATCH_RELATIVE1_CODE AND V202.MARKET_NO = V201.MATCH_RELATIVE1_CODE_MARKET) V305, ' ||"
+            "                    '(SELECT /*+ ordered use_hash(v202) no_merge(v201) no_merge(v202) */ ' ||"
+            "                    'VC_MATCH_RELATIVE2_CODE, ' || 'V201.LINENO, ' ||"
+            "                    'DECODE(V202.VC_INTER_CODE, NULL, NULL, V202.INTER_CODE) MATCH_RELATIVE2_INTER_CODE ' ||"
+            "                    'FROM V_STOCKINFO V201, V_INTER_CODE V202 ' ||"
+            "                    'WHERE V202.REPORT_CODE = V201.VC_MATCH_RELATIVE2_CODE AND　V202.MARKET_NO = V201.MATCH_RELATIVE2_CODE_MARKET) V306, ' ||"
+            "                    '(SELECT /*+ ordered use_hash(v202) no_merge(v201) no_merge(v202) */ ' ||"
+            "                    'VC_PRICE_RELATIVE_CODE, ' || 'V201.LINENO, ' ||"
+            "                    'DECODE(V202.VC_INTER_CODE, NULL, NULL, V202.INTER_CODE) PRICE_RELATIVE_INTER_CODE ' ||"
+            "                    'FROM V_STOCKINFO V201, V_INTER_CODE V202 ' ||"
+            "                    'WHERE V202.REPORT_CODE = V201.VC_PRICE_RELATIVE_CODE AND V202.MARKET_NO = V201.PRICE_RELATIVE_CODE_MARKET) V307, ' ||"
+            "                    '(SELECT /*+ ordered use_hash(v202) no_merge(v201) no_merge(v202) */ ' ||"
+            "                    'VC_REFERENCE_FA_CODE, ' || 'V201.LINENO, ' ||"
+            "                    'DECODE(V202.VC_INTER_CODE, NULL, NULL, V202.INTER_CODE) REFERENCE_FA_INTER_CODE ' ||"
+            "                    'FROM V_STOCKINFO V201, V_INTER_CODE V202 ' ||"
+            "                    'WHERE V202.REPORT_CODE = V201.VC_REFERENCE_FA_CODE AND V202.MARKET_NO = V201.REFERENCE_FA_CODE_MARKET ) V308, ' ||"
+            "                    'V_INTER_CODE V301 ' ||"
+            "                    'WHERE V301.LINENO = V302.LINENO(+) ' ||"
+            "                    'AND V301.LINENO = V303.LINENO(+) ' ||"
+            "                    'AND V301.LINENO = V304.LINENO(+) ' ||"
+            "                    'AND V301.LINENO = V305.LINENO(+) ' ||"
+            "                    'AND V301.LINENO = V306.LINENO(+) ' ||"
+            "                    'AND V301.LINENO = V307.LINENO(+) ' ||"
+            "                    'AND V301.LINENO = V308.LINENO(+)) ' ||"
+            "                    'SELECT /*+ ordered use_hash(t6) no_merge(t4) swap_join_inputs(t4) no_swap_join_inputs(t6) */ ' ||"
+            "                    'T4.INTER_CODE, '||V_BUSINESS_DATE||',T4.MARKET_NO, ' ||"
+            "                    'T6.VC_REPORT_CODE, ' || 'T6.VC_STOCK_NAME, ' ||"
+            "                    ''' '' STOCK_FULLNAME, ' || 'T6.C_ASSET_CLASS, ' ||"
+            "                    'NVL(T4.STOCK_TYPE, ''1''), ' ||"
+            "                    'NVL(T6.VC_MIXED_TYPE, '' ''), ' ||"
+            "                    'NVL(T6.EN_UPLIMITED_RATIO, 0), ' ||"
+            "                    'NVL(T6.EN_DOWNLIMITED_RATIO, 0), ' ||"
+            "                    'NVL(T6.EN_UPLIMITED_PRICE, 0), ' ||"
+            "                    'NVL(T6.EN_DOWNLIMITED_PRICE, 0), ' ||"
+            "                    ''' '' PRICE_ENTER_TYPE, ' ||"
+            "                    'NVL(T4.FROZEN_INTER_CODE, 0), ' ||"
+            "                    'NVL(T4.ASSIGN_INTER_CODE, 0), ' ||"
+            "                    'NVL(T4.ASSET_RELATIVE_INTER_CODE, 0), ' ||"
+            "                    'NVL(T4.MATCH_RELATIVE1_INTER_CODE, 0), ' ||"
+            "                    'NVL(T4.MATCH_RELATIVE2_INTER_CODE, 0), ' ||"
+            "                    'NVL(T4.PRICE_RELATIVE_INTER_CODE, 0), ' ||"
+            "                    'NVL(T4.REFERENCE_FA_INTER_CODE, 0), ' ||"
+            "                    'T6.L_TOTAL_AMOUNT, ' || 'T6.L_TURNOVER_AMOUNT, ' ||"
+            "                    '0 CLASSFIED_SHARE, ' || 'T6.EN_REPAY_YEAR PE, ' ||"
+            "                    'T6.EN_YESTERDAY_CLOSE_PRICE, ' || 'T6.L_COMPANY_ID, ' ||"
+            "                    'T6.C_STOP_FLAG, ' || 'T6.EN_LAST_PRICE, ' ||"
+            "                    'T6.EN_REFERENCE_PRICE, ' || 'T6.L_PUBLISH_DATE, ' ||"
+            "                    'T6.L_TURNOVER_DATE, ' || 'T6.L_TOTAL_LOCK_DAYS, ' ||"
+            "                    'T6.L_LEFT_LOCK_DAYS, ' || ''' '' ISIN_CODE, ' ||"
+            "                    'T6.EN_FACE_VALUES, ' || 'T6.L_LISTING_DATE, ' ||"
+            "                    'T6.L_WX_LISTING_DATE, ' || 'T6.C_LONG_STOP_FLAG, ' ||"
+            "                    'T6.EN_FAIR_PRICE2, ' || 'T6.VC_MOTHER_COMPANY_IDS, ' ||"
+            "                    'T6.L_BUY_UNIT, ' || 'T6.L_SALE_UNIT, ' ||"
+            "                    'NVL(T6.VC_TRADE_CURRENCY_NO, ''CNY''), ' ||"
+            "                    'NVL(T6.VC_SETTLE_CURRENCY_NO, NVL(T6.VC_TRADE_CURRENCY_NO, ''CNY'')), ' ||"
+            "                    ''' '' TRADE_PLATFORM_LIST, ' ||"
+            "                    '0 RIGHT_PRICE, ' ||"
+            "                    '0 MAX_RIGHTPRICE, ' || ''' '' VOTING_RIGHT, ' ||"
+            "                    'NVL(T6.VC_CONTRACTID_ID, '' ''), ' ||"
+            "                    '''1'' STOCK_STATUS, ' ||"
+            "                    'NVL(T6.C_BS_FLAG, '' '') TRADE_FLAG, ' ||"
+            "                    'T6.EN_ESTIMATE_PROB ONLINE_ESTIMATED_RATIO, ' ||"
+            "                    'T6.L_MARKET_DEAL_AMOUNT MARKET_DEAL_AMOUNT, ' ||"
+            "                    'T6.EN_MARKET_DEAL_BALANCE MARKET_DEAL_BALANCE, ' ||"
+            "                    'DECODE(T6.STOCK_FEE_TYPE, ''*'',''!'', NVL(T6.STOCK_FEE_TYPE, ''!'')), NVL(T6.HZJY_FLAG, '' ''), ' ||"
+            "                    'NVL(T6.TRADE_ACTIVE_FLAG, '' ''), NVL(T6.PERMIT_BUSIN_CLASSES, '' ''), T6.AVG_PRICE,T6.CHINABOND_FA_PRICE, T6.CHINACLEAR_FA_PRICE, DECODE(T6.PERMIT_BUSIN_CLASSES,''E'',''1'',''0''), T6.uplimited_amount, T6.downlimited_amount  ' ||"            
+            "                    'FROM V_ALL_NEW_CODE T4, '||V_TABLE_NAME_TMP||' T6 ' ||"
+            "                    'WHERE T6.LINENO = T4.LINENO AND EXISTS(SELECT 1 FROM JC_TSTOCKTYPE T7 WHERE T4.MARKET_NO=T7.MARKET_NO AND T4.STOCK_TYPE=T7.STOCK_TYPE)';"
+            ""
+            "  EXECUTE IMMEDIATE 'insert into jc_tconvertintercode select /*+ ALL_ROWS*/a.inter_code, a.market_no, a.report_code, '' '' from '||V_TABLE_NAME_O4||' a where a.inter_code not in (select inter_code from jc_tconvertintercode)';"
+                //债券类别调整
+            "  EXECUTE IMMEDIATE ' update jc_tstock a set a.stock_type=81 where a.stock_type=11 and report_code like ''510__4'' ';"
+            "  EXECUTE IMMEDIATE ' update jc_tstock a set a.stock_type=65 where a.stock_type=4 and instr(a.mixed_types, ''J'') > 0';"
+            "  EXECUTE IMMEDIATE ' update jc_tstock a set a.stock_type=62 where a.stock_type=24 and instr(a.mixed_types, ''i'') > 0';"
+            "  EXECUTE IMMEDIATE ' update jc_tstock a set a.stock_type=74 where (a.stock_type=24 or a.stock_type=4) and instr(a.mixed_types, ''6'') > 0';"
+            "  EXECUTE IMMEDIATE ' update jc_tstock a set a.stock_type=56 where (a.stock_type=24 or a.stock_type=4) and instr(a.mixed_types, ''p'') > 0';"
+            "  EXECUTE IMMEDIATE ' update jc_tstock a set a.stock_type=94 where a.stock_type=5  and instr(a.mixed_types, ''G'') > 0';"
+            "  EXECUTE IMMEDIATE ' update jc_tstock a set a.stock_type=95 where a.stock_type=5  and instr(a.mixed_types, ''='') > 0';"
+            
+            "  COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable, m_cSyncFlag);
+
+    hsLockCreateInterCode();
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    hsUnlockCreateInterCode();
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+bool CStockSync::ModifyStockType()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始调整证券类别");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL CONTEXT USE :o4Ctx;
+
+    //ETF证券类别调整
+    //QC:106133 新增etf_capital_code、etf_capital_code2代码的证券类别调整
+    EXEC SQL update jc_tstock a set a.stock_type = 84 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_stock_type='4' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 83 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '2' and a.etf_stock_type='2' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 82 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type <> '2' and a.etf_stock_type='2' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 77 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_stock_type='3' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 76 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_stock_type='5' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 59 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '4' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 58 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '3' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 57 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '2' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 55 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1, a.etf_capital_code, a.etf_capital_code2) and b.stock_type = 11 and a.etf_type = '1' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_UPDATE, "【%s】表同步，调整证券类别失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        EXEC SQL ROLLBACK;
+        return false;
+    }
+    EXEC SQL COMMIT;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，调整证券类别完成");
+    return true;
+}
+
+/**
+ * 同步证券信息历史表
+ * 每天T日日初后基础将jc_tstock的sys_date，report_code，market_no，market_deal_amount，market_deal_balance字段归档到jc_thisstock中，
+ * 但这时候的market_deal_amount，market_deal_balance是T-1日，
+ * 所以归档时要将sys_date变化为T-1日（T-1日从交易日期表中计算得出），
+ * 并且把his表中日期最小的数据删除，以保证日初加载数据量恒定
+ * @return true-成功,false-失败
+ */
+bool CStockSync::SyncStock2His()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始同步证券信息到证券历史表");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL CONTEXT USE :o4Ctx;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nPrevSysDate;
+    EXEC SQL END DECLARE SECTION;
+
+    //查询T-1日期
+    EXEC SQL SELECT SYS_DATE INTO :nPrevSysDate FROM (SELECT T.SYS_DATE FROM JC_TTRADEDATE T WHERE T.TRADEDAY_TYPE_ID = 0 AND T.SYS_DATE < SF_INIT_DATE() ORDER BY T.SYS_DATE DESC) WHERE ROWNUM = 1;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_QUERY, "【%s】表同步，同步证券信息历史表时查询T-1日期失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    //同步前先删除当天证券历史表里的当天数据，保证数据唯一
+    EXEC SQL DELETE FROM JC_THISSTOCK WHERE SYS_DATE = :nPrevSysDate;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_DELETE, "【%s】表同步，同步证券信息历史表时删除当天数据失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        EXEC SQL ROLLBACK;
+        return false;
+    }
+
+    //同步当天证券信息到证券历史表
+    EXEC SQL INSERT INTO JC_THISSTOCK SELECT :nPrevSysDate, T.REPORT_CODE, T.MARKET_NO, T.MARKET_DEAL_AMOUNT, T.MARKET_DEAL_BALANCE, T.STOCK_TYPE FROM JC_TSTOCK T WHERE T.SYS_DATE=SF_INIT_DATE();
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，同步证券信息历史表时插入当天数据失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        EXEC SQL ROLLBACK;
+        return false;
+    }
+
+    //删除证券历史表中30天以前的数据
+    EXEC SQL DELETE FROM JC_THISSTOCK
+                WHERE SYS_DATE < (SELECT MIN(SYS_DATE)
+                     FROM (SELECT SYS_DATE
+                             FROM (SELECT T.SYS_DATE
+                                     FROM JC_TTRADEDATE T
+                                    WHERE T.TRADEDAY_TYPE_ID = 0
+                                      AND T.SYS_DATE < SF_INIT_DATE()
+                                    ORDER BY T.SYS_DATE DESC)
+                            WHERE ROWNUM <= 30));
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，同步证券信息历史表时删除30天前历史数据失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        EXEC SQL ROLLBACK;
+        return false;
+    }
+
+    EXEC SQL COMMIT;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，同步证券信息到证券历史表完成");
+    return true;
+}
+
+bool CStockSync::AfterAction()
+{
+    if (m_cSyncFlag == '2' && !ModifyStockType())
+    {
+        //SetErrorInfo(SYNC_ERR_OTHER, "调整证券类别失败");
+        return false;
+    }
+
+    if (!SyncStock2His())
+    {
+        //SetErrorInfo(SYNC_ERR_OTHER, "同步证券信息到证券历史表失败");
+        return false;
+    }
+
+    return true;
+}
+

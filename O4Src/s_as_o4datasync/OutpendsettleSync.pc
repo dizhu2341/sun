@@ -1,0 +1,229 @@
+#include "OutpendsettleSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+COutpendsettleSync::COutpendsettleSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tpendsettle");
+    strcpy(m_sSrcView, "VO4JC_BANKOUTSETTLE");
+    strcpy(m_sTmpTable, "sync_outpendsettle");
+    strcpy(m_sDstTable, "uft_toutpendsettle");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+COutpendsettleSync::~COutpendsettleSync()
+{
+}
+
+bool COutpendsettleSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct OutpendsettleRecord
+    {
+        int occur_date[BATCH_ROWS];
+        int pendsettle_serial_no[BATCH_ROWS];
+        int relate_no[BATCH_ROWS];
+        int fund_id[BATCH_ROWS];
+        int asset_id[BATCH_ROWS];
+        int combi_id[BATCH_ROWS];
+        char stockholder_id[BATCH_ROWS][21];
+        char bind_seat[BATCH_ROWS][21];
+        char invest_type[BATCH_ROWS][2];
+        char market_no[BATCH_ROWS][2];
+        char report_code[BATCH_ROWS][33];
+        int busin_flag[BATCH_ROWS];
+        int asset_change_date[BATCH_ROWS];
+        int asset_change_point[BATCH_ROWS];
+        char asset_change_flag[BATCH_ROWS][2];
+        int stock_settle_date[BATCH_ROWS];
+        int cash_settle_date[BATCH_ROWS];
+        char stock_settle_flag[BATCH_ROWS][2];
+        char cash_settle_flag[BATCH_ROWS][2];
+        double deal_price[BATCH_ROWS];
+        double settle_amount[BATCH_ROWS];
+        double settle_balance[BATCH_ROWS];
+        int clear_speed[BATCH_ROWS];
+        char settle_type[BATCH_ROWS][2];
+        int trade_rival_no[BATCH_ROWS];
+        char busin_class[BATCH_ROWS][2];
+    } OutpendsettleRecord;
+    OutpendsettleRecord *lpOutpendsettleRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpOutpendsettleRecord =  new OutpendsettleRecord();
+    if (NULL == lpOutpendsettleRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【OutpendsettleRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpOutpendsettleRecord, 0, sizeof (OutpendsettleRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR select occur_date,pendsettle_serial_no,relate_no,fund_id,asset_id,
+        combi_id,stockholder_id,bind_seat,invest_type,market_no,report_code,busin_flag,asset_change_date,asset_change_point,asset_change_flag,stock_settle_date,
+        cash_settle_date,stock_settle_flag,cash_settle_flag,deal_price,settle_amount,settle_balance,clear_speed,settle_type,trade_rival_no,busin_class
+        from VO4JC_BANKOUTSETTLE;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpOutpendsettleRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpOutpendsettleRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpOutpendsettleRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_outpendsettle(occur_date,pendsettle_serial_no,relate_no,fund_id,asset_id,
+                combi_id,stockholder_id,bind_seat,invest_type,market_no,report_code,busin_flag,asset_change_date,asset_change_point,asset_change_flag,stock_settle_date,
+                cash_settle_date,stock_settle_flag,cash_settle_flag,deal_price,settle_amount,settle_balance,clear_speed,settle_type,trade_rival_no,busin_class)
+             values(:lpOutpendsettleRecord->occur_date,
+										:lpOutpendsettleRecord->pendsettle_serial_no,
+										:lpOutpendsettleRecord->relate_no,
+										:lpOutpendsettleRecord->fund_id,
+										:lpOutpendsettleRecord->asset_id,
+										:lpOutpendsettleRecord->combi_id,
+                                                                                rtrim(:lpOutpendsettleRecord->stockholder_id),
+                                                                                rtrim(:lpOutpendsettleRecord->bind_seat),
+										rtrim(:lpOutpendsettleRecord->invest_type),
+										rtrim(:lpOutpendsettleRecord->market_no),
+										rtrim(:lpOutpendsettleRecord->report_code),
+										:lpOutpendsettleRecord->busin_flag,
+										:lpOutpendsettleRecord->asset_change_date,
+										:lpOutpendsettleRecord->asset_change_point,
+										rtrim(:lpOutpendsettleRecord->asset_change_flag),
+										:lpOutpendsettleRecord->stock_settle_date,
+										:lpOutpendsettleRecord->cash_settle_date,
+										rtrim(:lpOutpendsettleRecord->stock_settle_flag),
+										rtrim(:lpOutpendsettleRecord->cash_settle_flag),
+										:lpOutpendsettleRecord->deal_price,
+										:lpOutpendsettleRecord->settle_amount,
+										:lpOutpendsettleRecord->settle_balance,
+										:lpOutpendsettleRecord->clear_speed,
+										rtrim(:lpOutpendsettleRecord->settle_type),
+										:lpOutpendsettleRecord->trade_rival_no,
+										rtrim(:lpOutpendsettleRecord->busin_class));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpOutpendsettleRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpOutpendsettleRecord;
+    return true;
+}
+
+bool COutpendsettleSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "  '  OCCUR_DATE,PENDSETTLE_SERIAL_NO,RELATE_NO,FUND_ID,ASSET_ID,COMBI_ID,STOCKHOLDER_ID,BIND_SEAT, '  ||"
+            "  '  INVEST_TYPE,MARKET_NO,REPORT_CODE,BUSIN_FLAG,ASSET_CHANGE_DATE,ASSET_CHANGE_POINT, '  ||"
+            "  '  ASSET_CHANGE_FLAG,STOCK_SETTLE_DATE,CASH_SETTLE_DATE,STOCK_SETTLE_FLAG,CASH_SETTLE_FLAG,DEAL_PRICE, '  ||"
+            "  '  SETTLE_AMOUNT,SETTLE_BALANCE,CLEAR_SPEED,SETTLE_TYPE,TRADE_RIVAL_NO,BUSIN_CLASS ) '  ||"
+            "  ' SELECT ' ||"
+            "  '   T1.OCCUR_DATE, ' ||"
+            "  '   T1.PENDSETTLE_SERIAL_NO, ' ||"
+            "  '   T1.RELATE_NO, ' ||"
+            "  '   T1.FUND_ID, ' ||"
+            "  '   T1.ASSET_ID, ' ||"
+            "  '   T1.COMBI_ID, ' ||"
+            "  ' CASE WHEN T1.STOCKHOLDER_ID=''-1'' THEN ''*'' ELSE NVL(T1.STOCKHOLDER_ID, ''*'') END AS STOCKHOLDER_ID, ' ||   "
+            "  '   NVL(T1.BIND_SEAT, '' ''), ' ||"
+            "  '   NVL(T1.INVEST_TYPE, '' ''), ' ||"
+            "  '   T2.MARKET_NO, ' ||"
+            "  '   NVL(T1.REPORT_CODE, '' ''), ' ||"
+            "  '   T1.BUSIN_FLAG, ' ||"
+            "  '   T1.ASSET_CHANGE_DATE, ' ||"
+            "  '   T1.ASSET_CHANGE_POINT, ' ||"
+            "  '   NVL(T1.ASSET_CHANGE_FLAG, '' ''), ' ||"
+            "  '   T1.STOCK_SETTLE_DATE, ' ||"
+            "  '   T1.CASH_SETTLE_DATE, ' ||"
+            "  '   NVL(T1.STOCK_SETTLE_FLAG, '' ''), ' ||"
+            "  '   NVL(T1.CASH_SETTLE_FLAG, '' ''), ' ||"
+            "  '   T1.DEAL_PRICE, ' ||"
+            "  '   T1.SETTLE_AMOUNT, ' ||"
+            "  '   T1.SETTLE_BALANCE, ' ||"
+            "  '   T1.CLEAR_SPEED, ' ||"
+            "  '   NVL(T1.SETTLE_TYPE, '' ''), ' ||"
+            "  '   T1.TRADE_RIVAL_NO, ' ||"
+            "  '   NVL(T1.BUSIN_CLASS, '' '') ' ||"
+            "  '  FROM SYNC_OUTPENDSETTLE T1, JC_TCONVERTMARKETNO T2 ' || "
+            "  '  WHERE 1=1 ' ||"
+            "  '    AND T1.MARKET_NO = T2.MARKET_NO_SRC '; "
+            "  COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

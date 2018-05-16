@@ -1,0 +1,73 @@
+##########################################################################
+##概    要:
+##  Makefile for g++ 3.4.6~
+##
+##  文件名: makefile.gcc
+##  模块名: libfsc_arbmgr.so
+##  模块说明: 
+##   
+##  -------------------------------------------------
+##  Copyright (C) 2008-2010 HUNDSUN TECHNOLOGIES INC.
+##  Hangzhou, China, Fri July 29 11:05:51 GMT 2016
+##  -------------------------------------------------
+##作    者: 公司研发中心 chengjin
+##创建时间: 2016-07-29
+##备    注: 
+##
+##修改记录: 
+##########################################################################
+
+###-(1)变量定义-###
+
+#输出目标库名
+EXES= fsc_arbmgr
+
+#动态库引出函数定义(不需要)
+EXPS=
+
+#OBJ扩展名定义
+TO=o
+
+#目标库前后缀定义
+LIB_PRE=lib
+LIB_EXT=.so
+
+#include路径
+INCDIR=-I $(HOME)/src
+
+#dll输出路径
+ifneq (,$(findstring solaris,$(OSTYPE)))
+OUTDIR = $(HOME)solaris.sparc/Lib
+else
+OUTDIR = $(HOME)/appcom
+endif
+
+
+#自定义编译(不同平台对同一模块可能有不同编译选项):
+DEFS = -DISLIB -DOS_UNIX
+
+#清除文件命令
+RM = rm -f
+
+
+###-(2)编译器参数设置-###
+CC = g++
+LD = $(CC)
+
+CFLAGS = -c -fPIC $(DEFS)
+LFLAGS = -shared 
+LIBPATH=$(OUTDIR)
+
+#debug版本
+ifdef _DEBUG
+DEFS= $(DEFS) -D_DEBUG
+CFLAGS = -c -g -fPIC $(DEFS)
+EXES = $(EXES)_d
+endif
+
+###-(3)要连接的标准库和自定义库-###
+STDLIBS= -lpthread  -lc -lnsl -ldl  -lm   -lstdc++ -lrt -lxml2
+DEFLIBS=
+
+###-(4)包含通用编译项-###
+include makefile.inc

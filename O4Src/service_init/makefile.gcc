@@ -1,0 +1,98 @@
+##########################################################################
+##概    要:
+##  Makefile for g++ 3.4.6~
+##
+##  文件名: makefile.gcc
+##  模块名: libfsc_service_init.so
+##  模块说明: 
+##   
+##  -------------------------------------------------
+##  Copyright (C) 2008-2010 HUNDSUN TECHNOLOGIES INC.
+##  Hangzhou, China, Mon Nov 17 10:26:17 GMT 2014
+##  -------------------------------------------------
+##作    者: 公司研发中心 chengjin
+##创建时间: 2014-11-17
+##备    注: 
+##
+##修改记录: 
+##########################################################################
+
+###-(1)变量定义-###
+
+#输出目标库名
+EXES= fsc_service_init
+
+#动态库引出函数定义(不需要)
+EXPS=
+
+#OBJ扩展名定义
+TO=o
+
+#目标库前后缀定义
+LIB_PRE=lib
+LIB_EXT=.so
+
+#include路径
+#INCDIR=-I$(HOME)
+INCDIR=-I$(HOME)/src -I$(FBASE_HOME)/ -I$(HOME)/src/IncludeFm
+
+#dll输出路径
+ifneq (,$(findstring solaris,$(OSTYPE)))
+OUTDIR = $(HOME)/appcom
+else
+OUTDIR = $(HOME)/appcom
+endif
+
+FC1 = s_liblogpublic
+FC2 = s_jc_public
+OBJS1 = $(FC1).$(TO)
+
+#自定义编译(不同平台对同一模块可能有不同编译选项):
+DEFS = -DISLIB -DOS_UNIX
+
+#清除文件命令
+RM = rm -f
+
+
+###-(2)编译器参数设置-###
+CC = g++
+LD = $(CC)
+
+CFLAGS = -c -fPIC $(DEFS)
+LFLAGS = -shared 
+LIBPATH=$(OUTDIR)
+
+#debug版本
+ifdef _DEBUG
+DEFS= $(DEFS) -D_DEBUG
+CFLAGS = -c -g -fPIC $(DEFS)
+EXES = $(EXES)_d
+endif
+
+###-(3)要连接的标准库和自定义库-###
+STDLIBS= -lpthread  -lc -lnsl -ldl  -lm   -lstdc++ -lrt -lxml2
+DEFLIBS=
+HSLIB= -L$(OUTDIR) -l$(FC1) -l$(FC2)
+
+###-(4)包含通用编译项-###
+#include makefile.inc
+#(1)目标文件
+
+OBJS=fsc_service_init_impl.$(TO)
+
+
+#(2)编译依赖.cpp.o:,
+#先清除目标文件
+all : cleanobj  $(EXES)
+fsc_service_init_impl.$(TO): fsc_service_init_impl.cpp 
+	$(CC) $(CFLAGS) fsc_service_init_impl.cpp $(INCDIR)
+ 
+
+$(EXES): $(OBJS)
+	$(LD) $(LFLAGS) -o$(OUTDIR)/$(LIB_PRE)$(EXES)$(LIB_EXT) $(OBJS) $(HSLIB) $(STDLIBS) $(DEFLIBS) $(EXPS)
+
+#(3)清理命令
+cleanobj:
+	$(RM) *.$(TO)
+clean:cleanobj
+	@echo clean all

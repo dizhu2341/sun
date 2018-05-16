@@ -1,0 +1,437 @@
+#include "FundinfoSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CFundinfoSync::CFundinfoSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tfundinfo");
+    strcpy(m_sSrcView, "VO4JC_FUNDINFO");
+    strcpy(m_sTmpTable, "sync_fundinfo");
+    strcpy(m_sDstTable, "jc_tfundinfo");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CFundinfoSync::~CFundinfoSync()
+{
+}
+
+bool CFundinfoSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct FundinfoRecord
+    {
+        char fa_net_name[BATCH_ROWS][129];
+        int fund_id[BATCH_ROWS];
+        int company_id[BATCH_ROWS];
+        int dept_id[BATCH_ROWS];
+        char fund_code[BATCH_ROWS][17];
+        char fund_name[BATCH_ROWS][33];
+        char fund_caption[BATCH_ROWS][129];
+        int default_asset[BATCH_ROWS];
+        int default_combi[BATCH_ROWS];
+        char fund_type[BATCH_ROWS][2];
+        char fund_status[BATCH_ROWS][2];
+        char permit_markets[BATCH_ROWS][257];
+        int net_price_digits[BATCH_ROWS];
+        char tax_flag[BATCH_ROWS][2];
+        int interbank_id[BATCH_ROWS];
+        char interbank_account[BATCH_ROWS][129];
+        char use_loose_balance[BATCH_ROWS][2];
+        char groupfa[BATCH_ROWS][2];
+        char shclearing_account[BATCH_ROWS][129];
+        char bond_riskmktvalue_calctype[BATCH_ROWS][2];
+        char bond_riskcost_calctype[BATCH_ROWS][2];
+        char invest_direction[BATCH_ROWS][2];
+        char tax_type[BATCH_ROWS][2];
+        double navtosub_ratio[BATCH_ROWS];
+        int paper_no[BATCH_ROWS];
+        int expire_date[BATCH_ROWS];
+        char long_stop_value_type[BATCH_ROWS][2];
+        char liquidate_type[BATCH_ROWS][2];
+        char tn_liquidate[BATCH_ROWS][2];
+        int liquidate_time[BATCH_ROWS];
+        char sequare_code_list[BATCH_ROWS][129];
+        char ta_code[BATCH_ROWS][33];
+        char accountant_type[BATCH_ROWS][2];
+        char clearcode_change_method[BATCH_ROWS][2];
+        char out_bond_type[BATCH_ROWS][2];
+        char interest_include_today[BATCH_ROWS][2];
+        char asset_calc_type[BATCH_ROWS][2];
+        char value_class[BATCH_ROWS][2];
+        char faimp_source[BATCH_ROWS][129];
+        char subject_adjust_type[BATCH_ROWS][2];
+        char need_fa[BATCH_ROWS][2];
+        char accountantset_type[BATCH_ROWS][2];
+        char stopbond_value_type[BATCH_ROWS][2];
+        char future_liquidate_type[BATCH_ROWS][2];
+        int tadeal_serialno[BATCH_ROWS];
+        char frozen_byasset[BATCH_ROWS][2];
+        char frozen_day_type[BATCH_ROWS][2];
+        int bail_frozen_start_days[BATCH_ROWS];
+        int bail_frozen_days[BATCH_ROWS];
+        char etf_value_type[BATCH_ROWS][2];
+        char tasettle_type[BATCH_ROWS][2];
+        char block_bond_faprice_type[BATCH_ROWS][2];
+        char exchange_abs_faprice_type[BATCH_ROWS][2];
+        char bank_abs_faprice_type[BATCH_ROWS][2];
+        char exchange_netbond_faprice_type[BATCH_ROWS][2];
+        char inaction_stock_faprice_type[BATCH_ROWS][2];
+        char trademonitor_flag[BATCH_ROWS][2];
+    } FundinfoRecord;
+    FundinfoRecord *lpFundinfoRecord = NULL;
+    char (*pMarketNoArr)[257];
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpFundinfoRecord =  new FundinfoRecord();
+    if (NULL == lpFundinfoRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【FundinfoRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpFundinfoRecord, 0, sizeof (FundinfoRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select fa_net_name, fund_id, company_id, dept_id, fund_code, fund_name, fund_caption, default_asset, default_combi, fund_type, fund_status, permit_markets, 
+        net_price_digits, tax_flag, interbank_id, interbank_account, use_loose_balance, groupfa, shclearing_account, bond_riskmktvalue_calctype, bond_riskcost_calctype, 
+        invest_direction, tax_type, navtosub_ratio, paper_no, expire_date, long_stop_value_type, liquidate_type, tn_liquidate, liquidate_time, sequare_code_list, ta_code, 
+        accountant_type, clearcode_change_method, out_bond_type, interest_include_today, asset_calc_type, value_class, faimp_source, subject_adjust_type, need_fa, 
+        accountantset_type, stopbond_value_type, future_liquidate_type, tadeal_serialno, frozen_byasset, frozen_day_type, bail_frozen_start_days, bail_frozen_days, 
+        etf_value_type, tasettle_type,block_bond_faprice_type,exchange_abs_faprice_type,bank_abs_faprice_type,exchange_netbond_faprice_type,inaction_stock_faprice_type, trademonitor_flag        
+        from VO4JC_FUNDINFO;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpFundinfoRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    pMarketNoArr = new char[BATCH_ROWS][257];
+
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpFundinfoRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFundinfoRecord;
+            delete pMarketNoArr;
+            return false;
+        }
+
+        //转换交易市场列表
+        ConvertMarketNoList(pMarketNoArr, lpFundinfoRecord->permit_markets);
+        
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+            insert into sync_fundinfo(fa_net_name, fund_id, company_id, dept_id, fund_code, fund_name, fund_caption, default_asset, 
+                                        default_combi, fund_type, fund_status, permit_markets, net_price_digits, tax_flag, interbank_id, 
+                                        interbank_account, use_loose_balance, groupfa, shclearing_account, bond_riskmktvalue_calctype, 
+                                        bond_riskcost_calctype, invest_direction, tax_type, navtosub_ratio, paper_no, expire_date, 
+                                        long_stop_value_type, liquidate_type, tn_liquidate, liquidate_time, sequare_code_list, ta_code, 
+                                        accountant_type, clearcode_change_method, out_bond_type, interest_include_today, asset_calc_type, 
+                                        value_class, faimp_source, subject_adjust_type, need_fa, accountantset_type, stopbond_value_type, 
+                                        future_liquidate_type, tadeal_serialno, frozen_byasset,frozen_day_type, bail_frozen_start_days, 
+                                        bail_frozen_days, etf_value_type, tasettle_type,block_bond_faprice_type,exchange_abs_faprice_type,
+                                        bank_abs_faprice_type,exchange_netbond_faprice_type,inaction_stock_faprice_type, trademonitor_flag)
+            values(rtrim(:lpFundinfoRecord->fa_net_name),
+                    :lpFundinfoRecord->fund_id,
+                    :lpFundinfoRecord->company_id,
+                    :lpFundinfoRecord->dept_id,
+                    rtrim(:lpFundinfoRecord->fund_code),
+                    rtrim(:lpFundinfoRecord->fund_name),
+                    rtrim(:lpFundinfoRecord->fund_caption),
+                    :lpFundinfoRecord->default_asset,
+                    :lpFundinfoRecord->default_combi,
+                    rtrim(:lpFundinfoRecord->fund_type),
+                    rtrim(:lpFundinfoRecord->fund_status),
+                    rtrim(:pMarketNoArr),
+                    :lpFundinfoRecord->net_price_digits,
+                    rtrim(:lpFundinfoRecord->tax_flag),
+                    :lpFundinfoRecord->interbank_id,
+                    rtrim(:lpFundinfoRecord->interbank_account),
+                    rtrim(:lpFundinfoRecord->use_loose_balance),
+                    rtrim(:lpFundinfoRecord->groupfa),
+                    rtrim(:lpFundinfoRecord->shclearing_account),
+                    rtrim(:lpFundinfoRecord->bond_riskmktvalue_calctype),
+                    rtrim(:lpFundinfoRecord->bond_riskcost_calctype),
+                    rtrim(:lpFundinfoRecord->invest_direction),
+                    rtrim(:lpFundinfoRecord->tax_type),
+                    :lpFundinfoRecord->navtosub_ratio,
+                    :lpFundinfoRecord->paper_no,
+                    :lpFundinfoRecord->expire_date,
+                    rtrim(:lpFundinfoRecord->long_stop_value_type),
+                    rtrim(:lpFundinfoRecord->liquidate_type),
+                    rtrim(:lpFundinfoRecord->tn_liquidate),
+                    :lpFundinfoRecord->liquidate_time,
+                    rtrim(:lpFundinfoRecord->sequare_code_list),
+                    rtrim(:lpFundinfoRecord->ta_code),
+                    rtrim(:lpFundinfoRecord->accountant_type),
+                    rtrim(:lpFundinfoRecord->clearcode_change_method),
+                    rtrim(:lpFundinfoRecord->out_bond_type),
+                    rtrim(:lpFundinfoRecord->interest_include_today),
+                    rtrim(:lpFundinfoRecord->asset_calc_type),
+                    rtrim(:lpFundinfoRecord->value_class),
+                    rtrim(:lpFundinfoRecord->faimp_source),
+                    rtrim(:lpFundinfoRecord->subject_adjust_type),
+                    rtrim(:lpFundinfoRecord->need_fa),
+                    rtrim(:lpFundinfoRecord->accountantset_type),
+                    rtrim(:lpFundinfoRecord->stopbond_value_type),
+                    rtrim(:lpFundinfoRecord->future_liquidate_type),
+                    :lpFundinfoRecord->tadeal_serialno,
+                    rtrim(:lpFundinfoRecord->frozen_byasset),
+                    rtrim(:lpFundinfoRecord->frozen_day_type),
+                    :lpFundinfoRecord->bail_frozen_start_days,
+                    :lpFundinfoRecord->bail_frozen_days,
+                    rtrim(:lpFundinfoRecord->etf_value_type),
+                    rtrim(:lpFundinfoRecord->tasettle_type),
+                    rtrim(:lpFundinfoRecord->block_bond_faprice_type),
+                    rtrim(:lpFundinfoRecord->exchange_abs_faprice_type),
+                    rtrim(:lpFundinfoRecord->bank_abs_faprice_type),
+                    rtrim(:lpFundinfoRecord->exchange_netbond_faprice_type),
+                    rtrim(:lpFundinfoRecord->inaction_stock_faprice_type),
+                    rtrim(:lpFundinfoRecord->trademonitor_flag));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFundinfoRecord;
+            delete pMarketNoArr;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpFundinfoRecord;
+    delete pMarketNoArr;
+    return true;
+}
+
+bool CFundinfoSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "  '  fund_id,company_id,dept_id,fund_code,fund_name,fund_caption, '  ||"
+            "  '  default_asset,default_combi,fund_type,fund_status,permit_markets,net_price_digits, '  ||"
+            "  '  tax_flag,interbank_id,interbank_account,use_loose_balance,groupfa,shclearing_account, '  ||"
+            "  '  bond_riskmktvalue_calctype,bond_riskcost_calctype,invest_direction,tax_type,navtosub_ratio,paper_no, '  ||"
+            "  '  expire_date,long_stop_value_type,liquidate_type,tn_liquidate,liquidate_time,sequare_code_list, '  ||"
+            "  '  ta_code,accountant_type,clearcode_change_method,out_bond_type,interest_include_today,asset_calc_type, '  ||"
+            "  '  value_class,faimp_source,subject_adjust_type,need_fa,accountantset_type,stopbond_value_type, '  ||"
+            "  '  future_liquidate_type,tadeal_serialno,frozen_byasset,frozen_day_type,bail_frozen_start_days,bail_frozen_days, '  ||"
+            "  '  etf_value_type,tasettle_type,fa_net_name,'  ||"
+            "  '  establish_date,remark,self_currency_no,collect_currency_no,multi_currency_flag,local_custodian,foreign_custodian,   '   ||"
+            "  '  object_code,foreigh_quota,apply_exchange_days,redemption_exchange_days,foreign_trust_account,permit_etfs,   '   ||"
+            "  '  bondaccount_type,exrate_set_no,rz_limit,fix_income_trade_type,cash_addup,block_bond_faprice_type,exchange_abs_faprice_type,	'   ||"
+            "   ' bank_abs_faprice_type,exchange_netbond_faprice_type,inaction_stock_faprice_type, trademonitor_flag)  ' ||"
+            "  ' select ' ||"
+            "  '   t1.fund_id, ' ||"
+            "  '   t1.company_id, ' ||"
+            "  '   t1.dept_id, ' ||"
+            "  '   nvl(t1.fund_code, '' ''), ' ||"
+            "  '   nvl(t1.fund_name, '' ''), ' ||"
+            "  '   nvl(t1.fund_caption, '' ''), ' ||"
+            "  '   t1.default_asset, ' ||"
+            "  '   t1.default_combi, ' ||"
+            "  '   nvl(t2.sub_dic_no, '' ''), ' ||"
+            "  '   nvl(t1.fund_status, ''1''), ' ||"
+            "  '   nvl(t1.permit_markets, ''1,2''), ' ||"
+            "  '   t1.net_price_digits, ' ||"
+            "  '   nvl(t1.tax_flag, ''1''), ' ||"
+            "  '   t1.interbank_id, ' ||"
+            "  '   nvl(t1.interbank_account, '' ''), ' ||"
+            "  '   nvl(t1.use_loose_balance, '' ''), ' ||"
+            "  '   nvl(t1.groupfa, '' ''), ' ||"
+            "  '   nvl(t1.shclearing_account, '' ''), ' ||"
+            "  '   nvl(t1.bond_riskmktvalue_calctype, '' ''), ' ||"
+            "  '   nvl(t1.bond_riskcost_calctype, '' ''), ' ||"
+            "  '   nvl(t1.invest_direction, '' ''), ' ||"
+            "  '   nvl(t1.tax_type, '' ''), ' ||"
+            "  '   t1.navtosub_ratio, ' ||"
+            "  '   t1.paper_no, ' ||"
+            "  '   t1.expire_date, ' ||"
+            "  '   nvl(t1.long_stop_value_type, ''1''), ' ||"
+            "  '   nvl(t1.liquidate_type, '' ''), ' ||"
+            "  '   nvl(t1.tn_liquidate, '' ''), ' ||"
+            "  '   t1.liquidate_time, ' ||"
+            "  '   nvl(t1.sequare_code_list, '' ''), ' ||"
+            "  '   nvl(t1.ta_code, '' ''), ' ||"
+            "  '   nvl(t1.accountant_type, '' ''), ' ||"
+            "  '   nvl(t1.clearcode_change_method, '' ''), ' ||"
+            "  '   nvl(t1.out_bond_type, '' ''), ' ||"
+            "  '   nvl(t1.interest_include_today, '' ''), ' ||"
+            "  '   nvl(t1.asset_calc_type, '' ''), ' ||"
+            "  '   nvl(t1.value_class, '' ''), ' ||"
+            "  '   nvl(t1.faimp_source, '' ''), ' ||"
+            "  '   nvl(t1.subject_adjust_type, '' ''), ' ||"
+            "  '   nvl(t1.need_fa, '' ''), ' ||"
+            "  '   nvl(t1.accountantset_type, '' ''), ' ||"
+            "  '   nvl(t1.stopbond_value_type, '' ''), ' ||"
+            "  '   nvl(t1.future_liquidate_type, '' ''), ' ||"
+            "  '   t1.tadeal_serialno, ' ||"
+            "  '   nvl(t1.frozen_byasset, '' ''), ' ||"
+            "  '   nvl(t1.frozen_day_type, ''1''), ' ||"
+            "  '   t1.bail_frozen_start_days, ' ||"
+            "  '   t1.bail_frozen_days, ' ||"
+            "  '   nvl(t1.etf_value_type, '' ''), ' ||"
+            "  '   nvl(t1.tasettle_type, ''0''), ' ||"
+            "  '   nvl(t1.fa_net_name, '' ''), ' ||"
+            "  '	0 ESTABLISH_DATE,'' '' REMARK,''CNY'' SELF_CURRENCY_NO,''CNY'' COLLECT_CURRENCY_NO,''0'' MULTI_CURRENCY_FLAG,0 LOCAL_CUSTODIAN,0 FOREIGN_CUSTODIAN,	'   ||"
+            "  '	'' '' OBJECT_CODE,0 FOREIGH_QUOTA,0 APPLY_EXCHANGE_DAYS,0  REDEMPTION_EXCHANGE_DAYS,'' '' FOREIGN_TRUST_ACCOUNT,'' '' PERMIT_ETFS,'  ||"
+            "  '	'' '' BONDACCOUNT_TYPE,0 EXRATE_SET_NO,0 RZ_LIMIT,'' '' FIX_INCOME_TRADE_TYPE,''0'' CASH_ADDUP, '   ||"
+            "  '	nvl(t1.block_bond_faprice_type,'' ''),nvl(t1.exchange_abs_faprice_type,'' ''),nvl(t1.bank_abs_faprice_type,'' ''),nvl(t1.exchange_netbond_faprice_type,'' ''), '   ||"
+            "   '   nvl(t1.inaction_stock_faprice_type,'' ''), nvl(t1.trademonitor_flag, ''0'') ' ||"
+            "  '  from sync_fundinfo t1, jc_tconvertdic t2' ||"
+            "  '  where t1.fund_type=t2.sub_dic_src' ||"
+            "  '  and t2.dic_no=40001';"
+            ""
+            "  EXECUTE IMMEDIATE 'insert into jc_tcenterfund select 0 as center_id, a.fund_id  from jc_tfundinfo a where a.fund_id not in (select fund_id from jc_tcenterfund)';"
+            "  COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+void CFundinfoSync::ConvertMarketNoList(char (*pMarketNoArr)[257], char sMarketNoSrc[BATCH_ROWS][257])
+{
+    int nRet = 0;
+    int nErrNo = 0;
+    char sErrInfo[1025] = {0};
+    char sErrPathInfo[4001] = {0};
+    char sWhereStr[2048] = {0};
+    char sMarketNoList[4000] = {0};
+
+    IF2PackSvr * lpPackService = m_lpContext->GetF2PackSvr();
+    IF2Packer * lpInPacker = lpPackService->GetPacker(2);
+    IF2Packer * lpOutPacker = lpPackService->GetPacker(2);
+    IF2UnPacker * lpOutUnPacker = NULL;
+
+    for (int i = 0; i < BATCH_ROWS; ++i)
+    {
+        //查询内存表
+        replace(sWhereStr, sMarketNoSrc[i], ",", "','");
+        hs_snprintf(sWhereStr, sizeof (sWhereStr), "market_no_src in ('%s')", sWhereStr);                        
+        
+        lpInPacker->BeginPack();
+        lpInPacker->AddField("table_name", 'S');
+        lpInPacker->AddField("column_str", 'S');
+        lpInPacker->AddField("where_str", 'S', 2048);
+        lpInPacker->AddField("error_pathinfo", 'S', 4000);
+        lpInPacker->AddStr("jc_tconvertmarketno");
+        lpInPacker->AddStr("market_no");
+        lpInPacker->AddStr(sWhereStr);
+        lpInPacker->AddStr(" ");
+        lpInPacker->EndPack();
+
+        lpOutPacker->BeginPack();
+        nRet = GetMdbData(m_lpContext, lpInPacker->UnPack(), lpOutPacker, &nErrNo, sErrInfo, sErrPathInfo);
+        lpOutPacker->EndPack();
+        if (nRet != 0)
+        {
+            SetErrorInfo(SYNC_ERR_OTHER, "【%s】表同步，转换交易市场列表时读取内存表失败【%s】", m_sDstTable, sErrInfo);
+
+            if (lpInPacker)
+            {
+                free(lpInPacker->GetPackBuf());
+                lpInPacker->Release();
+            }
+            if (lpOutPacker)
+            {
+                free(lpOutPacker->GetPackBuf());
+                lpOutPacker->Release();
+            }
+            return;
+        }
+
+        //重新组装转换后的列表字符串
+        int j = 0;
+        lpOutUnPacker = lpOutPacker->UnPack();
+        while (!lpOutUnPacker->IsEOF())
+        {
+            if (j)
+            {
+                sprintf(sMarketNoList, "%s,%d", sMarketNoList, lpOutUnPacker->GetInt("market_no"));
+            } else
+            {
+                sprintf(sMarketNoList, "%d", lpOutUnPacker->GetInt("market_no"));
+            }
+            j++;
+            lpOutUnPacker->Next();
+        }
+
+        strcpy(pMarketNoArr[i], sMarketNoList);         
+        //重置
+        //memset(pMarketNoArr, 0, sizeof (sMarketNoList));
+        memset(sWhereStr, 0, sizeof (sWhereStr));
+    }
+
+    //释放资源
+    if (lpInPacker)
+    {
+        free(lpInPacker->GetPackBuf());
+        lpInPacker->Release();
+    }
+    if (lpOutPacker)
+    {
+        free(lpOutPacker->GetPackBuf());
+        lpOutPacker->Release();
+    }
+}
+

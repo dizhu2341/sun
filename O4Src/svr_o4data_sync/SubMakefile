@@ -1,0 +1,13 @@
+START_FUC=9920
+
+ANAME=svr_o4data_sync
+
+SNAME=svc_multi_sync
+
+INCDIR=$(COMMONINC)
+
+LIBDIR=$(COMMONLIB)
+
+TMP_PROGS = ../public/d3des.c ../public/spub.c ../public/hsencrypt.c ../public/spackage.c  ../public/memdata.c \
+        procMain.pc o4data_convert.cpp global_func.cpp base64/base64.c  \
+         ../public/memorystream.c  t2callserver.cpp initenable.cpp

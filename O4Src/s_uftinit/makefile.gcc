@@ -1,0 +1,68 @@
+#输出目标库名
+EXES=s_uftinit
+
+#OBJ扩展名定义
+TO=o
+
+#目标库前后缀定义
+LIB_PRE=lib
+LIB_EXT=.so
+
+#include路径
+INCDIR=-I$(HOME)/src -I$(FBASE_HOME)/
+
+#dll输出路径
+OUTDIR = $(HOME)/appcom
+
+#自定义编译(不同平台对同一模块可能有不同编译选项):
+DEFS = -DISLIB -DOS_UNIX
+
+#清除文件命令
+RM = rm -f
+
+###-(2)编译器参数设置-###
+CC = g++
+LD = $(CC)
+
+CFLAGS = -c -fPIC $(DEFS)
+LFLAGS = -shared 
+LIBPATH=$(OUTDIR)
+
+#debug版本
+ifdef _DEBUG
+DEFS= $(DEFS) -D_DEBUG
+CFLAGS = -c -g -fPIC $(DEFS)
+EXES = $(EXES)_d
+endif
+
+###-(3)要连接的标准库和自定义库-###
+STDLIBS= -lpthread  -lc -lnsl  -ldl  -lm   -lstdc++ -lrt -lxml2
+DEFLIBS= -L$(OUTDIR) -ls_jc_public -ls_liblogpublic -lwritedlog
+
+###-(4)编译连接命令-###
+#(4-1)目标文件
+OBJS=multicast_init.$(TO) monitor.$(TO) tinyxmlparser.$(TO) tinyxmlerror.$(TO) tinystr.$(TO) tinyxml.$(TO)
+
+#(4-2)编译依赖.cpp.o:,
+#先清除目标文件
+all : cleanobj  $(EXES)
+tinyxmlparser.$(TO): tinyxmlparser.cpp
+	$(CC) $(CFLAGS) tinyxmlparser.cpp -DTIXML_USE_STL
+tinyxmlerror.$(TO): tinyxmlerror.cpp
+	$(CC) $(CFLAGS) tinyxmlerror.cpp -DTIXML_USE_STL
+tinystr.$(TO): tinystr.cpp
+	$(CC) $(CFLAGS) tinystr.cpp -DTIXML_USE_STL
+tinyxml.$(TO): tinyxml.cpp
+	$(CC) $(CFLAGS) tinyxml.cpp -DTIXML_USE_STL
+multicast_init.$(TO): multicast_init.cpp
+	$(CC) $(CFLAGS) multicast_init.cpp $(INCDIR)
+monitor.$(TO): monitor.cpp
+	$(CC) $(CFLAGS) monitor.cpp $(INCDIR) -DTIXML_USE_STL
+$(EXES): $(OBJS)
+	$(LD) $(LFLAGS) -o$(OUTDIR)/$(LIB_PRE)$(EXES)$(LIB_EXT) $(OBJS) $(STDLIBS) $(DEFLIBS) $(EXPS)
+
+###-(5)资源清理-###
+cleanobj:
+	$(RM) *.$(TO)
+clean:cleanobj
+	@echo clean al

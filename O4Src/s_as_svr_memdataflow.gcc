@@ -1,0 +1,125 @@
+# *********************************************************************
+# Make文件注意：
+# 必须定义以下环境变量：
+#   windows: 
+#       ORACLE_HOME （例如：e:\oracle\ora10g）
+#       VC_HOME （例如：c:\program files\devstudio\vc\include）
+#   linux: 
+#       GCC_VER （例如：export GCC_VER = 3.2.3） 可以执行：g++ -v查找当前版本 }
+# 
+# 编译实例：
+#   windows: 
+#       执行版本:     nmake -fs_XXXXflow.mvc -D _DEBUG=1 ORA_VER=10  
+#   linux: 
+#       执行版本:       make -fs_XXXXflow.gcc ORA_VER=10  
+# 
+# *********************************************************************
+#功能组件makefile
+#目标: s_as_svr_memdata
+FBASE_HOME = ..
+
+#obj扩展名定义$TO
+TO=o
+#proc文件扩展名定义$FROM
+FROM=pc
+
+#要编译的组件名,构成组件的obj文件定义
+FC1 = s_as_svr_memdataflow
+FC2 = s_libpublic
+FC3 = s_helper
+FC4 = s_glbfunction_or
+FC5 = s_as_svr_memdatafunc
+
+OBJS1 =  $(FC1).$(TO) $(FC5).$(TO)
+
+ifneq (,$(findstring solaris,$(OSTYPE)))
+OUTDIR = $(FBASE_HOME)/appcom
+else
+OUTDIR = $(FBASE_HOME)/appcom
+endif
+
+#PROC预处理器
+PROC = $(ORACLE_HOME)/bin/proc
+#CPP编译器
+CC = g++
+
+#预编译选项
+CPP_PROFLAGS = ireclen=132 \
+oreclen=132 \
+char_map=string \
+close_on_commit=yes \
+code=cpp \
+comp_charset=multi_byte \
+cpool=no \
+cpp_suffix=cpp \
+dbms=native \
+def_sqlcode=yes \
+define=USE_PRO_C \
+dynamic=oracle \
+fips=none \
+ltype=short \
+maxliteral=1024 \
+maxopencursors=60 \
+mode=ansi \
+prefetch=200 \
+select_error=yes \
+sqlcheck=syntax \
+threads=yes \
+unsafe_null=no \
+userid=t120830/t120830@ora10g \
+include=$(ORACLE_HOME)/precomp/public\
+include=$(ORACLE_HOME)/oci/include\
+include=$(FBASE_HOME)\
+include=$(GCC_LIB)
+
+
+#(-Dxxx should be added to DEFS macro):
+DEFS =-D OS_UNIX
+
+
+#option 编译，连接选项
+CFLAGS = -c -fPIC $(DEFS)
+LDFLAGS = -shared
+STDLIBS = -lc -lnsl -ldl -lm -lstdc++ -lpthread
+LIBPATH=$(OUTDIR)
+DBLIB = -L$(ORACLE_HOME)/lib -lclntsh -L$(ORACLE_HOME)/lib  -lsql$(ORA_VER)
+HSLIB = -L$(OUTDIR) -l$(FC4) -l$(FC2) -l$(FC3) 
+
+#头文件路径
+INCLALL=-I $(HOME)/src -I $(ORACLE_HOME)/precomp/public -I $(ORACLE_HOME)/oci/include
+
+ifdef _DEBUG
+DEFS = -D_DEBUG
+CFLAGS = -c -g -fPIC $(DEFS)
+endif
+all:$(FC1)
+
+$(FC1):$(OBJS1)
+	$(CC)  $(LDFLAGS) $(OBJS1) $(DBLIB) $(HSLIB) -o$(OUTDIR)/lib$(FC1).$(ORA_VER).so $(LIBS) $(EXP)
+
+$(FC1).$(TO):$(FC1).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC1).$(FROM) oname=$(FC1).cpp
+	$(CC) $(CFLAGS) $(FC1).cpp $(INCLALL)
+
+$(FC2).$(TO):$(FC2).cpp)
+	$(CC) $(CFLAGS) $(INCLALL) $(FC2).cpp -o $(FC2).o
+
+$(FC3).$(TO):$(FC3).cpp
+	$(CC) $(CFLAGS) $(FC3).cpp $(INCLALL)
+
+$(FC4).$(TO):$(FC4).cpp
+	$(CC) $(CFLAGS) $(FC4).cpp $(INCLALL)
+
+$(FC5).$(TO):$(FC5).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC5).$(FROM) oname=$(FC5).cpp
+	$(CC) $(CFLAGS) $(INCLALL) $(FC5).cpp -o $(FC5).o
+
+
+cleanobj:
+	rm -fr *.o core *~ cxx_repository
+clean: cleanobj
+	rm -f $(OUTDIR)/$(ASPACK_DLL)
+doxygen:
+	doxygen doxygen.cfg
+	-del *.obj
+

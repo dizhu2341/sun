@@ -1,0 +1,78 @@
+  ############################################################################
+  ##
+  ##  makefile.gcc
+  ##
+  ##  mc2_topic_api
+  ##  -----------------------------------------------
+  ##  Copyright (C) 2012-2014 HUNDSUN TECHNOLOGIES INC.
+  ##  Hangzhou, China, 
+  ##
+  ##########################################################################*
+
+##(1)变量定义
+FBASE_HOME	= $(HOME)
+ifdef _LIB64
+	OUTDIR		= $(FBASE_HOME)/appcom
+	PLATFORM_TYPE= -m64
+else
+	OUTDIR		=  $(FBASE_HOME)/appcom
+	PLATFORM_TYPE= -m32
+endif
+
+#不能用INCLUDE变量, 这会与win32下的系统环境变量include冲突
+INCDIR		= -I$(HOME)/src
+
+TO		= o
+SUFFIXES	=
+EXES		= o4_mc2_topic_api$(SUFFIXES)
+
+LIB_PRE		= lib
+LIB_EXT		= .so
+
+RM		= rm
+
+#(2)编译器参数及预定义宏设置
+CC		= g++
+LD		= $(CC)
+
+DEFS    = -DNDEBUG
+
+ifdef _DEBUG
+DEFS		= $(DEFS) -D_DEBUG
+CFLAGS		= -c -g -fPIC $(DEFS)
+SUFFIXES	= _d
+else
+CFLAGS		= -c -O2 -fPIC $(DEFS)
+endif
+
+LFLAGS		= -shared 
+
+ARCHIVE		= 
+
+#(3)要连接的标准库和自定义库
+STDLIBS		= -lc -lm -lstdc++
+DEFLIBS		= 
+
+#(4)文件操作命令
+RMOBJ		= -$(RM) *.$(TO)
+RMALL		= -$(RM) $(OUTDIR)/$(LIB_PRE)$(EXES)$(LIB_EXT)
+
+#(5)编译依赖.cpp.o:,
+OBJS = mc2_topic_api.$(TO)
+
+$(EXES):$(OBJS)
+	$(LD) $(LFLAGS) -o $(OUTDIR)/$(LIB_PRE)$(EXES)$(LIB_EXT) $(OBJS) $(LINK) $(STDLIBS) $(DEFLIBS) $(EXPS)
+
+mc2_topic_api.$(TO): mc2_topic_api.cpp
+	$(CC) $(CFLAGS) mc2_topic_api.cpp $(INCDIR)
+
+#(2)编译依赖.cpp.o:
+#先清除目标文件
+all : clean $(EXES)
+
+#(3)清理命令
+cleanobj:
+	$(RMOBJ)
+clean:cleanobj
+	@echo clean all
+	$(RMALL)

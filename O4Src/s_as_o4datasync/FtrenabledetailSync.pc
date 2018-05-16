@@ -1,0 +1,215 @@
+#include "FtrenabledetailSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CFtrenabledetailSync::CFtrenabledetailSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tftrenabledetail");
+    strcpy(m_sSrcView, "vo4jc_arbitaryinfo");
+    strcpy(m_sTmpTable, "sync_ftrenabledetail");
+    strcpy(m_sDstTable, "uft_tftrenabledetail");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CFtrenabledetailSync::~CFtrenabledetailSync()
+{
+}
+
+bool CFtrenabledetailSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct FtrenabledetailRecord
+    {
+        int business_date[BATCH_ROWS];
+        int fund_id[BATCH_ROWS];
+        int asset_id[BATCH_ROWS];
+        int combi_id[BATCH_ROWS];
+        char stockholder_id[BATCH_ROWS][21];
+        char invest_type[BATCH_ROWS][2];
+        int market_no[BATCH_ROWS];
+        char report_code[BATCH_ROWS][33];
+        char position_type[BATCH_ROWS][2];
+        int batch_serial_no[BATCH_ROWS];
+        double open_amount[BATCH_ROWS];
+        double open_position_price[BATCH_ROWS];
+        int open_holder_date[BATCH_ROWS];
+        char deal_no[BATCH_ROWS][65];            
+        char assem_flag[BATCH_ROWS][2];
+        int company_id[BATCH_ROWS];
+        char position_stock_type[BATCH_ROWS][2];
+    } FtrenabledetailRecord;
+    FtrenabledetailRecord *lpFtrenabledetailRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpFtrenabledetailRecord =  new FtrenabledetailRecord();
+    if (NULL == lpFtrenabledetailRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【FtrenabledetailRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpFtrenabledetailRecord, 0, sizeof (FtrenabledetailRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select business_date, fund_id, asset_id, combi_id, stockholder_id, invest_type, market_no, 
+        report_code, position_type, batch_serial_no, open_amount, open_position_price, 
+        open_holder_date, deal_no, assem_flag, company_id, position_stock_type 
+        from vo4jc_arbitaryinfo;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpFtrenabledetailRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpFtrenabledetailRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFtrenabledetailRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_ftrenabledetail(business_date, fund_id, asset_id, combi_id, stockholder_id, invest_type, market_no, report_code, position_type, batch_serial_no, open_amount, open_position_price, open_holder_date, deal_no, assem_flag, company_id, position_stock_type)
+             values(:lpFtrenabledetailRecord->business_date,
+										:lpFtrenabledetailRecord->fund_id,
+										:lpFtrenabledetailRecord->asset_id,
+										:lpFtrenabledetailRecord->combi_id,
+										rtrim(:lpFtrenabledetailRecord->stockholder_id),
+										rtrim(:lpFtrenabledetailRecord->invest_type),
+										:lpFtrenabledetailRecord->market_no,
+										rtrim(:lpFtrenabledetailRecord->report_code),
+										rtrim(:lpFtrenabledetailRecord->position_type),
+										:lpFtrenabledetailRecord->batch_serial_no,
+										:lpFtrenabledetailRecord->open_amount,
+										:lpFtrenabledetailRecord->open_position_price,
+										:lpFtrenabledetailRecord->open_holder_date,
+										rtrim(:lpFtrenabledetailRecord->deal_no),										
+										rtrim(:lpFtrenabledetailRecord->assem_flag),
+                                        :lpFtrenabledetailRecord->company_id,
+                                        rtrim(:lpFtrenabledetailRecord->position_stock_type));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFtrenabledetailRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpFtrenabledetailRecord;
+    return true;
+}
+
+bool CFtrenabledetailSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME_O4;"
+            ""
+            "  EXECUTE IMMEDIATE 'INSERT INTO '||V_TABLE_NAME_O4||' (' ||"
+            "                    ' BUSINESS_DATE,' ||  "
+            "                    ' FUND_ID,' ||  "
+            "                    ' ASSET_ID,' ||  "
+            "                    ' COMBI_ID,' ||  "
+            "                    ' INVEST_TYPE,' ||  "
+            "                    ' STOCKHOLDER_ID,' ||  "
+            "                    ' MARKET_NO,' ||    "
+            "                    ' REPORT_CODE,' ||    "
+            "                    ' INTER_CODE,' ||  "
+            "                    ' POSITION_TYPE,' ||  "
+            "                    ' BATCH_SERIAL_NO,' ||  "
+            "                    ' OPEN_AMOUNT,' ||  "
+            "                    ' OPEN_POSITION_PRICE,' ||  "
+            "                    ' OPEN_HOLDER_DATE,' ||  "
+            "                    ' DEAL_NO,' ||  "
+            "                    ' ASSEM_FLAG, COMPANY_ID, POSITION_STOCK_TYPE)' ||"           
+            "                    ' SELECT ' ||"
+            "                    ' T1.BUSINESS_DATE,' ||"
+            "                    ' T1.FUND_ID,' ||"
+            "                    ' T1.ASSET_ID,' ||"
+            "                    ' T1.COMBI_ID,' ||"
+            "                    ' NVL(T1.INVEST_TYPE, '' ''),' ||"
+            "                    ' CASE WHEN T1.STOCKHOLDER_ID=''-1'' THEN ''*'' ELSE NVL(T1.STOCKHOLDER_ID, ''*'') END AS STOCKHOLDER_ID,' ||"
+            "                    ' T1.MARKET_NO,' ||"
+            "                    ' T1.REPORT_CODE,' ||"
+            "                    ' T2.INTER_CODE,' ||"
+            "                    ' NVL(T1.POSITION_TYPE, '' ''),' ||"
+            "                    ' T1.BATCH_SERIAL_NO,' ||"
+            "                    ' T1.OPEN_AMOUNT,' ||"
+            "                    ' T1.OPEN_POSITION_PRICE,' ||"
+            "                    ' T1.OPEN_HOLDER_DATE,' ||"
+            "                    ' NVL(T1.DEAL_NO, '' ''),' ||"
+            "                    ' NVL(T1.ASSEM_FLAG, '' ''), T1.COMPANY_ID, T1.POSITION_STOCK_TYPE' ||"
+            "                    ' FROM '||V_TABLE_NAME_TMP||' T1,JC_TCONVERTINTERCODE T2 ' ||"
+            "                    ' WHERE T1.MARKET_NO=T2.MARKET_NO' ||"
+            "                    ' AND T1.REPORT_CODE=T2.REPORT_CODE' ||"
+            "                    ' AND T2.INTER_CODE IS NOT NULL'; "
+            ""
+            "  COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

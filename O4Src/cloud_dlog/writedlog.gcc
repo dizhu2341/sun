@@ -1,0 +1,66 @@
+# *********************************************************************
+# Make文件注意：
+# 必须定义以下环境变量：
+#   windows: 
+#       ORACLE_HOME （例如：e:\oracle\ora10g）
+#       VC_HOME （例如：c:\program files\devstudio\vc\include）
+#   linux: 
+#       GCC_VER （例如：export GCC_VER = 3.2.3） 可以执行：g++ -v查找当前版本 }
+# 
+# 编译实例：
+#   windows: 
+#       执行版本:     nmake -f XXXX.mvc -D _DEBUG=1 ORA_VER=10  
+#   linux: 
+#       执行版本:       make -f XXXX.gcc ORA_VER=10  
+# 
+# *********************************************************************
+#obj扩展名定义$TO
+TO=o
+#文件扩展名定义
+EXT=cpp
+HEAD=h
+
+#要编译的组件名,构成组件的obj文件定义
+FC1 = writedlog
+
+
+OBJS1 =  $(FC1).$(TO)
+
+ifneq (,$(findstring solaris,$(OSTYPE)))
+OUTDIR = $(HOME)/appcom
+else
+OUTDIR = $(HOME)/appcom
+endif
+
+#CPP编译器
+CC = g++
+
+#(-Dxxx should be added to DEFS macro):
+DEFS =-D OS_UNIX
+
+
+#option 编译，连接选项
+CFLAGS = -c -fPIC $(DEFS)
+LDFLAGS = -shared
+STDLIBS = -lc -lnsl -ldl -lm -lstdc++ -lpthread
+LIBPATH=$(OUTDIR)
+DBLIB = -L$(ORACLE_HOME)/lib -lclntsh -L$(ORACLE_HOME)/lib  -lsql$(ORA_VER)
+#头文件路径
+INCLALL =  -I $(HOME)/src  -I $(ORACLE_HOME)/precomp/public  -I $(ORACLE_HOME)/oci/include  -I $(FBASE_HOME)/ 
+
+#debug版本
+ifdef _DEBUG
+DEFS = -D_DEBUG
+CFLAGS = -c -g -fPIC $(DEFS)
+endif
+all:$(FC1)
+
+$(FC1):$(OBJS1)
+	 $(CC) $(LDFLAGS) $(OBJS1) $(HSLIB) -o$(OUTDIR)/libwritedlog.so $(LIBS) $(EXP)
+	 
+$(FC1).$(TO):$(FC1).$(EXT)
+	$(CC) $(CFLAGS) $(FC1).$(EXT) $(INCLALL)
+
+clean:
+	rm -f *.o
+

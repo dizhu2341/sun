@@ -1,0 +1,273 @@
+#include "HgregisterSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CHgregisterSync::CHgregisterSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "thgregister");
+    strcpy(m_sSrcView, "VO4JC_HGREGISTER");
+    strcpy(m_sTmpTable, "sync_hgregister");
+    strcpy(m_sDstTable, "uft_thgregister");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CHgregisterSync::~CHgregisterSync()
+{
+}
+
+bool CHgregisterSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct HgregisterRecord
+    {
+        int business_date[BATCH_ROWS];
+        int hg_serial_no[BATCH_ROWS];
+        int company_id[BATCH_ROWS];
+        int fund_id[BATCH_ROWS];
+        int combi_id[BATCH_ROWS];
+        char stockholder_id[BATCH_ROWS][21];
+        char bind_seat[BATCH_ROWS][21];
+        int market_no[BATCH_ROWS];
+        char report_code[BATCH_ROWS][33];
+        int busin_flag[BATCH_ROWS];
+        int entrust_direction[BATCH_ROWS];
+        //double hg_days[BATCH_ROWS];
+        int clear_speed[BATCH_ROWS];
+        double deal_amount[BATCH_ROWS];
+        double deal_price[BATCH_ROWS];
+        double deal_balance[BATCH_ROWS];
+        int hg_deal_date[BATCH_ROWS];
+        int legal_gh_date[BATCH_ROWS];
+        int actual_gh_date[BATCH_ROWS];
+        double hg_fee[BATCH_ROWS];
+        double hg_interest[BATCH_ROWS];
+        char deal_no[BATCH_ROWS][65];
+        char trade_seat[BATCH_ROWS][21];
+        char gh_process_flag [BATCH_ROWS][2];
+        int settle_date[BATCH_ROWS];
+        int settle_point[BATCH_ROWS];
+        int expire_settle_date[BATCH_ROWS];
+        int second_settle_point[BATCH_ROWS];
+        int asset_id[BATCH_ROWS];
+        char balance_type[BATCH_ROWS][2];
+        int capital_account_id[BATCH_ROWS];
+    } HgregisterRecord;
+    HgregisterRecord *lpHgregisterRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpHgregisterRecord =  new HgregisterRecord();
+    if (NULL == lpHgregisterRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【HgregisterRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpHgregisterRecord, 0, sizeof (HgregisterRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+					    select 
+                            business_date, 
+                            hg_serial_no, 
+                            company_id,
+                            fund_id, 
+                            combi_id, 
+                            stockholder_id, 
+                            bind_seat, 
+                            market_no, 
+                            report_code, 
+                            busin_flag,
+                            entrust_direction, 
+                            clear_speed, 
+                            deal_amount, 
+                            deal_price, 
+                            deal_balance, 
+                            hg_deal_date, 
+                            legal_gh_date, 
+                            actual_gh_date, 
+                            hg_fee, 
+                            hg_interest,
+                            deal_no,
+                            trade_seat, 
+                            gh_process_flag,
+                            settle_date,
+                            settle_point,
+                            expire_settle_date,
+                            second_settle_point,
+                            asset_id,
+                            balance_type,
+                            capital_account_id
+					    from VO4JC_HGREGISTER;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpHgregisterRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpHgregisterRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpHgregisterRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_hgregister(business_date, 
+                                        hg_serial_no, 
+                                        company_id,
+                                        fund_id, 
+                                        combi_id, 
+                                        stockholder_id, 
+                                        bind_seat, 
+                                        market_no, 
+                                        report_code, 
+                                        busin_flag,
+                                        entrust_direction, 
+                                        clear_speed, 
+                                        deal_amount, 
+                                        deal_price, 
+                                        deal_balance, 
+                                        hg_deal_date, 
+                                        legal_gh_date, 
+                                        actual_gh_date, 
+                                        hg_fee, 
+                                        hg_interest,
+                                        deal_no,
+                                        trade_seat, 
+                                        gh_process_flag,
+                                        settle_date,
+                                        settle_point,
+                                        expire_settle_date,
+                                        second_settle_point,
+                                        asset_id,
+                                        balance_type,
+                                        capital_account_id)
+             values(:lpHgregisterRecord->business_date,
+                    :lpHgregisterRecord->hg_serial_no,
+                    :lpHgregisterRecord->company_id,
+                    :lpHgregisterRecord->fund_id,
+                    :lpHgregisterRecord->combi_id,
+                    rtrim(:lpHgregisterRecord->stockholder_id),
+                    rtrim(:lpHgregisterRecord->bind_seat),
+                    (:lpHgregisterRecord->market_no),
+                    rtrim(:lpHgregisterRecord->report_code),
+                    :lpHgregisterRecord->busin_flag,
+                    (:lpHgregisterRecord->entrust_direction),
+                    :lpHgregisterRecord->clear_speed,
+                    :lpHgregisterRecord->deal_amount,
+                    :lpHgregisterRecord->deal_price,
+                    :lpHgregisterRecord->deal_balance,
+                    :lpHgregisterRecord->hg_deal_date,
+                    :lpHgregisterRecord->legal_gh_date,
+                    :lpHgregisterRecord->actual_gh_date,
+                    :lpHgregisterRecord->hg_fee,
+                    :lpHgregisterRecord->hg_interest,
+                    :lpHgregisterRecord->deal_no,
+                    rtrim(:lpHgregisterRecord->trade_seat),
+                    rtrim(:lpHgregisterRecord->gh_process_flag),
+                    :lpHgregisterRecord->settle_date,
+                    :lpHgregisterRecord->settle_point,
+                    :lpHgregisterRecord->expire_settle_date,
+                    :lpHgregisterRecord->second_settle_point,
+                    :lpHgregisterRecord->asset_id,
+                    rtrim(:lpHgregisterRecord->balance_type),
+                    :lpHgregisterRecord->capital_account_id);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpHgregisterRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpHgregisterRecord;
+    return true;
+}
+
+bool CHgregisterSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "	'   BUSINESS_DATE,HG_SERIAL_NO,COMPANY_ID,FUND_ID,COMBI_ID,STOCKHOLDER_ID,BIND_SEAT,MARKET_NO,REPORT_CODE,BUSIN_FLAG,INTER_CODE,' ||"
+            "	'   ENTRUST_DIRECTION,CLEAR_SPEED,DEAL_AMOUNT,DEAL_PRICE,DEAL_BALANCE,HG_DEAL_DATE,LEGAL_GH_DATE,ACTUAL_GH_DATE,HG_FEE,HG_INTEREST,DEAL_NO,     ' ||"
+            "       '   TRADE_SEAT,GH_PROCESS_FLAG, SETTLE_DATE, SETTLE_POINT, EXPIRE_SETTLE_DATE, SECOND_SETTLE_POINT, asset_id, balance_type, capital_account_id)  '	||"        
+            "       ' SELECT T2.BUSINESS_DATE,' ||  "
+            "       ' T1.HG_SERIAL_NO,T1.COMPANY_ID,T1.FUND_ID,T1.COMBI_ID,' ||"
+            "       ' CASE WHEN T1.STOCKHOLDER_ID=''-1'' THEN ''*'' ELSE NVL(T1.STOCKHOLDER_ID, ''*'') END AS STOCKHOLDER_ID, ' ||   "
+            "       ' NVL(T1.BIND_SEAT, '' ''),T1.MARKET_NO,NVL(T1.REPORT_CODE,'' ''),T1.BUSIN_FLAG,T3.INTER_CODE,' ||"
+            "	' T1.ENTRUST_DIRECTION,T1.CLEAR_SPEED,T1.DEAL_AMOUNT,T1.DEAL_PRICE,T1.DEAL_BALANCE,T1.HG_DEAL_DATE,T1.LEGAL_GH_DATE,T1.ACTUAL_GH_DATE,T1.HG_FEE,T1.HG_INTEREST,T1.DEAL_NO, ' ||"
+            "       ' NVL(T1.TRADE_SEAT,'' ''),NVL(T1.GH_PROCESS_FLAG,'' ''),T1.SETTLE_DATE, T1.SETTLE_POINT, T1.EXPIRE_SETTLE_DATE, T1.SECOND_SETTLE_POINT, T1.asset_id, T1.balance_type, T1.capital_account_id ' ||"
+            "       ' FROM '||V_TABLE_NAME_TMP||' T1,JC_TMARKETINFO T2,JC_TCONVERTINTERCODE T3' || "
+            "       ' WHERE  T1.MARKET_NO =T3.MARKET_NO AND T1.REPORT_CODE=T3.REPORT_CODE '||" 
+            "       ' AND T1.MARKET_NO = T2.MARKET_NO ' || "
+            "       ' AND T3.INTER_CODE IS NOT NULL ';"
+            "  COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

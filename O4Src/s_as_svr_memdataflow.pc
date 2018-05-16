@@ -1,0 +1,144 @@
+
+
+#include "s_as_svr_memdatafunc.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+EXEC SQL CONTEXT USE DEFAULT;
+//修订时间   交付项版本 修订单号   修订人     申请人   修改内容 修改原因     备注         
+//AS_内存数据库_获取证券信息
+int FUNCTION_CALL_MODE F990001(IAS2Context* lpContext,IF2UnPacker * lpInUnPacker,IF2Packer * lpOutPacker)
+{
+int iReturnCode = 0;
+//输入参数初始化
+int p_inter_code = lpInUnPacker->GetInt("inter_code");
+char v_table_name[129] = {0};
+char v_column_str[513] = {0};
+char v_where_str[2049] = {0};
+char v_error_info[1025] = {0};
+char v_error_pathinfo[513] = {0};
+int v_error_no = 0;
+char v_error_pathinfo_tmp[501] = {0};
+int v_error_id = 0;
+char v_error_sysinfo[500] = {0};
+hs_strncpy(v_error_pathinfo,conversion((char *)lpInUnPacker->GetStr("error_pathinfo")),512);
+hs_strncat(v_error_pathinfo," -> F990001()",512);
+hs_strncpy(v_error_pathinfo_tmp,v_error_pathinfo,500);
+//IF2PackSvr声明及初始化
+IF2PackSvr * lpPackService = lpContext->GetF2PackSvr();
+//IF2Packer声明及初始化
+IF2Packer * lpFuncInPacker = lpPackService->GetPacker(2);
+//IF2Packer声明及初始化
+IF2Packer * lpOut990011 = lpPackService->GetPacker(2);
+//IF2UnPacker声明
+IF2UnPacker * lpResultSet990011 = NULL;
+IConnection * lpConn = lpContext->GetDBConnection("usersvr");
+if(lpConn)
+{
+hs_strcpy(v_table_name, "tstockinfo");
+hs_strcpy(v_column_str, " vc_inter_code ");
+sprintf(v_where_str, " vc_inter_code = '%d' " , p_inter_code); 
+
+//调用子函数:AF_内存数据库_查询信息
+lpFuncInPacker->BeginPack();
+lpFuncInPacker->AddField("table_name");
+lpFuncInPacker->AddField("column_str", 'S', 512);
+lpFuncInPacker->AddField("where_str", 'S', 2048);
+lpFuncInPacker->AddField("error_pathinfo", 'S', 512);
+
+lpFuncInPacker->AddStr(v_table_name);	//table_name
+lpFuncInPacker->AddStr(v_column_str);	//column_str
+lpFuncInPacker->AddStr(v_where_str);	//where_str
+lpFuncInPacker->AddStr(v_error_pathinfo);	//error_pathinfo
+
+lpFuncInPacker->EndPack();
+//将打包结果转为参数解包器供函数使用
+lpOut990011->BeginPack();
+iReturnCode = F990011(lpContext,lpFuncInPacker->UnPack(),lpOut990011, lpConn);
+lpOut990011->EndPack();
+lpResultSet990011 = lpOut990011->UnPack();//结果解包
+if ( 0 != iReturnCode&& iReturnCode != ERR_SYSWARNING)
+{
+v_error_no = iReturnCode;
+hs_strncpy(v_error_info, lpResultSet990011->GetStr("error_info"),1024);
+
+
+hs_strncpy(v_error_pathinfo,lpResultSet990011->GetStr("error_pathinfo"),512);
+goto svr_end;
+
+}
+else
+{
+
+}
+}
+else
+{
+  iReturnCode = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+  v_error_no = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+  sprintf(v_error_info, "系统忙(数据库连接[%s]无法获取).", "usersvr");
+  v_error_id = ERR_SYS_BUSI_GET_DBCONN_FAIL;
+  goto svr_end;
+}
+
+goto svr_end;
+svr_end:
+
+if (iReturnCode == OK_SUCCESS || iReturnCode == ERR_SYSWARNING)
+{
+PackResultSet(lpResultSet990011,lpOutPacker);
+}
+else
+{
+GetErrorInfo(lpContext, v_error_no, v_error_info);
+SystemErrorPacker(lpOutPacker,v_error_pathinfo,v_error_no,v_error_info);
+WriteSystemLog(lpContext,v_error_pathinfo,v_error_no,v_error_info,v_error_id,v_error_sysinfo);
+}
+if (lpFuncInPacker)
+{
+free(lpFuncInPacker->GetPackBuf());
+lpFuncInPacker->Release();
+}
+if (lpOut990011)
+{
+free(lpOut990011->GetPackBuf());
+lpOut990011->Release();
+}
+if (lpConn)
+lpConn->toFree();
+return iReturnCode;
+}
+int  FUNCTION_CALL_MODE GetBizFunctionsInfo(int Index, LPBIZ_FUNC_INFO  ppv )
+{
+int iReturnCode = ASFC_EXISTS;
+switch (Index)
+{
+case 0:
+if  (ppv!=NULL)
+{
+ppv->dwFunctionNo = 990001;
+ppv->iVersion = 20130628;
+ppv->ReqProc = F990001;
+ppv->AnsProc = NULL;
+ppv->Caption = "AS_内存数据库_获取证券信息";
+}
+break;
+default:iReturnCode = ASFC_NONE;
+}
+return iReturnCode;
+}
+char *  ASFC_CALL_MODE GetLibVersion()
+{
+return "1.0.0.1";
+}
+void  FUNCTION_CALL_MODE OnLoad(char * arg)
+{
+}
+void  FUNCTION_CALL_MODE OnUnload()
+{
+}
+void  FUNCTION_CALL_MODE OnStart()
+{
+}
+void  FUNCTION_CALL_MODE OnStop()
+{
+}

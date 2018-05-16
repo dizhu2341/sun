@@ -1,0 +1,276 @@
+#include "Otcdealsettuncomp_redo.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+COtcdealsettuncompRedo::COtcdealsettuncompRedo(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "totcdealsettuncomp");
+    strcpy(m_sSrcView, "vo4jc_otcpendsettle_redo");
+    strcpy(m_sTmpTable, "sync_otcdealsettuncomp_redo");
+    strcpy(m_sDstTable, "uft_totcdealsettuncomp_syc");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+COtcdealsettuncompRedo::~COtcdealsettuncompRedo()
+{
+}
+
+bool COtcdealsettuncompRedo::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;        
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        int nFetchRows;
+        //声明结构体变量
+
+        typedef struct OtcdealsettuncompRecord
+        {
+            int business_date[BATCH_ROWS];//          number(8,0)     DEFAULT 0       NOT NULL   , 
+            int pendsettle_serial_no[BATCH_ROWS];//   number(10,0)    DEFAULT 0       NOT NULL   , 
+            int company_id[BATCH_ROWS];//             number(10,0)    DEFAULT 0       NOT NULL   , 
+            int fund_id[BATCH_ROWS];//                number(8,0)     DEFAULT 0       NOT NULL   , 
+            int asset_id[BATCH_ROWS];//               number(10,0)    DEFAULT 0       NOT NULL   , 
+            char balance_type[BATCH_ROWS][2];//           char(1)         DEFAULT '' ''   NOT NULL   , 
+            int capital_account_id[BATCH_ROWS];//     number(10,0)    DEFAULT 0       NOT NULL   , 
+            int combi_id[BATCH_ROWS];//               number(10,0)    DEFAULT 0       NOT NULL   , 
+            char invest_type[BATCH_ROWS][2];//            char(1)         DEFAULT '' ''   NOT NULL   , 
+            int market_no[BATCH_ROWS];//              number(8,0)     DEFAULT 0       NOT NULL   , 
+            char report_code[BATCH_ROWS][33];//            varchar2(32)    DEFAULT '' ''   NOT NULL   , 
+            int busin_flag[BATCH_ROWS];//             number(8,0)     DEFAULT 0       NOT NULL   , 
+            char settle_currency_no[BATCH_ROWS][4];//     varchar2(3)     DEFAULT '' ''   NOT NULL   , 
+            double deal_price[BATCH_ROWS];//             number(20,12)   DEFAULT 0       NOT NULL   ,           
+            int occur_date[BATCH_ROWS];//             number(8,0)     DEFAULT 0       NOT NULL   ,          
+            char deal_no[BATCH_ROWS][65];//                varchar2(64)    DEFAULT '' ''   NOT NULL   , 
+            int trade_platform_id[BATCH_ROWS];//      number(10,0)    DEFAULT 0       NOT NULL   , 
+            int entrust_direction[BATCH_ROWS];//      number(3,0)     DEFAULT 0       NOT NULL   , 
+            int clear_speed[BATCH_ROWS];//            number(8,0)     DEFAULT 0       NOT NULL   , 
+            int trade_rival_no[BATCH_ROWS];//         number(10,0)    DEFAULT 0       NOT NULL     
+            double settle_amount[BATCH_ROWS];
+            double settle_balance[BATCH_ROWS];
+            int stock_settle_date[BATCH_ROWS];
+            int stock_settle_point[BATCH_ROWS];
+            char stock_settle_flag[BATCH_ROWS][2];
+            int cash_settle_date[BATCH_ROWS];
+            int cash_settle_point[BATCH_ROWS];
+            char cash_settle_flag[BATCH_ROWS][2];
+        } OtcdealsettuncompRecord;
+        OtcdealsettuncompRecord *lpOtcdealsettuncompRecord = NULL;
+    EXEC SQL END DECLARE SECTION;           
+    
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    if (NULL == o3Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O3数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    // 从O32读取数据放入到结构体
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select 
+            business_date,
+            pendsettle_serial_no,
+            company_id,
+            fund_id,
+            asset_id,
+            balance_type,
+            capital_account_id,
+            combi_id,
+            invest_type,
+            market_no,
+            report_code,
+            busin_flag,
+            settle_currency_no,
+            deal_price,         
+            occur_date,           
+            deal_no,
+            trade_platform_id,
+            entrust_direction,
+            clear_speed,
+            trade_rival_no,
+            settle_amount,
+            settle_balance,
+            stock_settle_date,
+            stock_settle_point,
+            stock_settle_flag,
+            cash_settle_date,
+            cash_settle_point,
+            cash_settle_flag
+        from vo4jc_otcpendsettle_redo;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);        
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    // 申请内存空间
+    lpOtcdealsettuncompRecord = new OtcdealsettuncompRecord();
+    if (NULL == lpOtcdealsettuncompRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【OptiondepositsetRecord】失败", m_sDstTable);
+        return false;
+    }
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        memset(lpOtcdealsettuncompRecord, 0, sizeof (OtcdealsettuncompRecord));
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpOtcdealsettuncompRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpOtcdealsettuncompRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_otcdealsettuncomp_redo(
+                            business_date,
+                            pendsettle_serial_no,
+                            company_id,
+                            fund_id,
+                            asset_id,
+                            balance_type,
+                            capital_account_id,
+                            combi_id,
+                            invest_type,
+                            market_no,
+                            report_code,
+                            busin_flag,
+                            settle_currency_no,
+                            deal_price,                         
+                            occur_date,                          
+                            deal_no,
+                            trade_platform_id,
+                            entrust_direction,
+                            clear_speed,
+                            trade_rival_no,
+                            settle_amount,
+                            settle_balance,
+                            stock_settle_date,
+                            stock_settle_point,
+                            stock_settle_flag,
+                            cash_settle_date,
+                            cash_settle_point,
+                            cash_settle_flag)
+             values(:lpOtcdealsettuncompRecord->business_date,
+                    :lpOtcdealsettuncompRecord->pendsettle_serial_no,
+                    :lpOtcdealsettuncompRecord->company_id,
+                    :lpOtcdealsettuncompRecord->fund_id,
+                    :lpOtcdealsettuncompRecord->asset_id,
+                    rtrim(:lpOtcdealsettuncompRecord->balance_type),
+                    :lpOtcdealsettuncompRecord->capital_account_id,
+                    :lpOtcdealsettuncompRecord->combi_id,
+                    rtrim(:lpOtcdealsettuncompRecord->invest_type),
+                    :lpOtcdealsettuncompRecord->market_no,
+                    rtrim(:lpOtcdealsettuncompRecord->report_code),
+                    :lpOtcdealsettuncompRecord->busin_flag,
+                    rtrim(:lpOtcdealsettuncompRecord->settle_currency_no),
+                    :lpOtcdealsettuncompRecord->deal_price,               
+                    :lpOtcdealsettuncompRecord->occur_date,              
+                    rtrim(:lpOtcdealsettuncompRecord->deal_no),
+                    :lpOtcdealsettuncompRecord->trade_platform_id,
+                    :lpOtcdealsettuncompRecord->entrust_direction,
+                    :lpOtcdealsettuncompRecord->clear_speed,
+                    :lpOtcdealsettuncompRecord->trade_rival_no,
+                    :lpOtcdealsettuncompRecord->settle_amount,
+                    :lpOtcdealsettuncompRecord->settle_balance,
+                    :lpOtcdealsettuncompRecord->stock_settle_date,
+                    :lpOtcdealsettuncompRecord->stock_settle_point,
+                    rtrim(:lpOtcdealsettuncompRecord->stock_settle_flag),
+                    :lpOtcdealsettuncompRecord->cash_settle_date,
+                    :lpOtcdealsettuncompRecord->cash_settle_point,
+                    rtrim(:lpOtcdealsettuncompRecord->cash_settle_flag));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpOtcdealsettuncompRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpOtcdealsettuncompRecord;
+    return true;
+}
+
+bool COtcdealsettuncompRedo::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "从中间表导入数据到【%s】表，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"       
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"          
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"       
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"          
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "   '   BUSINESS_DATE, PENDSETTLE_SERIAL_NO, COMPANY_ID, FUND_ID, ASSET_ID, BALANCE_TYPE, CAPITAL_ACCOUNT_ID,' ||"
+            "   '   COMBI_ID, INVEST_TYPE, MARKET_NO, REPORT_CODE, BUSIN_FLAG, SETTLE_CURRENCY_NO, DEAL_PRICE,' ||"
+            "   '  OCCUR_DATE, DEAL_NO, TRADE_PLATFORM_ID, ENTRUST_DIRECTION,' ||"
+            "   '   CLEAR_SPEED, TRADE_RIVAL_NO, ' ||"
+            "   '   settle_amount, settle_balance, stock_settle_date, stock_settle_point, stock_settle_flag, cash_settle_date, cash_settle_point, cash_settle_flag ) ' || "
+            "   ' SELECT ' ||"
+            "   '   T1.BUSINESS_DATE, T1.PENDSETTLE_SERIAL_NO, T1.COMPANY_ID, T1.FUND_ID, T1.ASSET_ID, T1.BALANCE_TYPE, T1.CAPITAL_ACCOUNT_ID,' ||"
+            "   '   T1.COMBI_ID, T1.INVEST_TYPE, T1.MARKET_NO, T1.REPORT_CODE, T1.BUSIN_FLAG, T1.SETTLE_CURRENCY_NO, T1.DEAL_PRICE, ' ||"
+            "   '   T1.OCCUR_DATE, T1.DEAL_NO, T1.TRADE_PLATFORM_ID, T1.ENTRUST_DIRECTION,' ||"
+            "   '   T1.CLEAR_SPEED, T1.TRADE_RIVAL_NO, ' ||"
+            "   '   t1.settle_amount, t1.settle_balance, t1.stock_settle_date, t1.stock_settle_point, t1.stock_settle_flag, t1.cash_settle_date, t1.cash_settle_point, t1.cash_settle_flag ' || "
+            "   ' FROM sync_otcdealsettuncomp_redo T1'; "
+            "  COMMIT;"
+            "END;", m_sDstTable);
+   
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

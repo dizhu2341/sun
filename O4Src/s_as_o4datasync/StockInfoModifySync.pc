@@ -1,0 +1,274 @@
+/* 
+ * File:   StockInfoModifySync.pc
+ * Author: sunhm15168
+ * Description: 证券信息增量同步类
+ * Created on 2016年3月14日, 上午9:29
+ */
+#include "StockInfoModifySync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CStockInfoModifySync::CStockInfoModifySync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tstockinfo");
+    strcpy(m_sSrcView, "vo4jc_qsstockinfo_redo");
+    strcpy(m_sTmpTable, "sync_qsstockinfo");
+    strcpy(m_sDstTable, "jc_tstock_sync");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CStockInfoModifySync::~CStockInfoModifySync()
+{
+
+}
+
+bool CStockInfoModifySync::AfterAction()
+{
+    if (m_cSyncFlag == '2' && !ModifyStockType())
+    {
+        //SetErrorInfo(SYNC_ERR_OTHER, "调整证券类别失败");
+        return false;
+    }
+
+    return true;
+}
+
+bool CStockInfoModifySync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+
+    //声明结构体变量
+    EXEC SQL BEGIN DECLARE SECTION;
+        int nFetchRows;
+
+        typedef struct StockInfoModifyRecord
+        {
+            int market_no[BATCH_ROWS];//                    number(8,0)     DEFAULT 0       NOT NULL   , 
+            char report_code[BATCH_ROWS][33];//                  varchar2(32)    DEFAULT '' ''   NOT NULL   ,           
+            char stock_name[BATCH_ROWS][129];//                   varchar2(128)   DEFAULT '' ''   NOT NULL   , 
+            char stock_stop_flag[BATCH_ROWS][2];//              char(1)         DEFAULT '' ''   NOT NULL   , 
+            double yesterday_close_price[BATCH_ROWS];//        number(20,12)   DEFAULT 0       NOT NULL   , 
+            double last_price[BATCH_ROWS];//                   number(20,12)   DEFAULT 0       NOT NULL   , 
+            int stock_type[BATCH_ROWS];//                   number(8,0)     DEFAULT 0       NOT NULL   , 
+            char trade_currency_no[BATCH_ROWS][4];//            varchar2(3)     DEFAULT '' ''   NOT NULL   , 
+            char settle_currency_no[BATCH_ROWS][4];//           varchar2(3)     DEFAULT '' ''   NOT NULL   , 
+            char asset_type[BATCH_ROWS][33];//                   varchar2(32)    DEFAULT '' ''   NOT NULL   , 
+            char assign_report_code[BATCH_ROWS][33];//           varchar2(32)    DEFAULT '' ''   NOT NULL   , 
+            char asset_relative_report_code[BATCH_ROWS][33];//   varchar2(32)    DEFAULT '' ''   NOT NULL     
+        } StockInfoModifyRecord;
+        StockInfoModifyRecord *lpStockInfoModifyRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+    
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    if (NULL == o3Ctx)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，获取O3数据库连接句柄失败", m_sDstTable);     
+        return false;
+    }
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR
+        select 
+            market_no,
+            report_code,          
+            stock_name,
+            stock_stop_flag,
+            yesterday_close_price,
+            last_price,
+            stock_type, 
+            trade_currency_no,   
+            settle_currency_no,         
+            asset_type,                 
+            assign_report_code,           
+            asset_relative_report_code   
+        from vo4jc_qsstockinfo;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);        
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+    
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，获取O4数据库连接句柄失败", m_sDstTable);     
+        return false;
+    }
+    lpStockInfoModifyRecord = new StockInfoModifyRecord();
+    if (NULL == lpStockInfoModifyRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【StockInfoModifyRecord】失败", m_sDstTable);
+        return false;
+    }
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        memset(lpStockInfoModifyRecord, 0, sizeof (StockInfoModifyRecord));
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpStockInfoModifyRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpStockInfoModifyRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+            insert into sync_stock(
+                    market_no,
+                    report_code,
+                    stock_name,
+                    stock_stop_flag,
+                    yesterday_close_price,
+                    last_price,
+                    stock_type, 
+                    trade_currency_no,   
+                    settle_currency_no,         
+                    asset_type,                 
+                    assign_report_code,           
+                    asset_relative_report_code)
+             values(:lpStockInfoModifyRecord->market_no,
+                    rtrim(:lpStockInfoModifyRecord->report_code),
+                    rtrim(:lpStockInfoModifyRecord->stock_name),
+                    rtrim(:lpStockInfoModifyRecord->stock_stop_flag),
+                    :lpStockInfoModifyRecord->yesterday_close_price,
+                    :lpStockInfoModifyRecord->last_price,
+                    :lpStockInfoModifyRecord->stock_type, 
+                    rtrim(:lpStockInfoModifyRecord->trade_currency_no),   
+                    rtrim(:lpStockInfoModifyRecord->settle_currency_no),         
+                    rtrim(:lpStockInfoModifyRecord->asset_type),                 
+                    rtrim(:lpStockInfoModifyRecord->assign_report_code),           
+                    rtrim(:lpStockInfoModifyRecord->asset_relative_report_code));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpStockInfoModifyRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    delete lpStockInfoModifyRecord;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    return true;
+}
+
+bool CStockInfoModifySync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】增量表同步，开始导入数据到O4表【" << m_sDstTable << "】");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            //"       ' inter_code, ' ||"
+            "       ' market_no, ' ||"
+            "       ' report_code, ' ||"          
+            "       ' stock_name, ' ||"
+            "       ' stock_stop_flag, ' ||"
+            "       ' yesterday_close_price, ' ||"
+            "       ' last_price, ' ||"
+            "       ' stock_type, ' ||" 
+            "       ' trade_currency_no, ' ||"   
+            "       ' settle_currency_no, ' ||"         
+            "       ' asset_type, ' ||"                 
+            "       ' assign_report_code, ' ||"           
+            "       ' asset_relative_report_code) ' ||"  
+            "   ' select ' ||"
+            //"       ' inter_code, ' ||"
+            "       ' market_no, ' ||"
+            "       ' report_code, ' ||"          
+            "       ' stock_name, ' ||"
+            "       ' stock_stop_flag, ' ||"
+            "       ' yesterday_close_price, ' ||"
+            "       ' last_price, ' ||"
+            "       ' stock_type, ' ||" 
+            "       ' trade_currency_no, ' ||"   
+            "       ' settle_currency_no, ' ||"         
+            "       ' asset_type, ' ||"                 
+            "       ' assign_report_code, ' ||"           
+            "       ' asset_relative_report_code ' ||"  
+            "       ' from ' || V_TABLE_NAME_TMP; "
+            "  COMMIT;"
+            ""
+            "END;", m_sTmpTable, m_sDstTable);
+
+    hsLockCreateInterCode();
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    hsUnlockCreateInterCode();
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】增量表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+
+    LOGDETAIL("【" << m_sDstTable << "】增量表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+bool CStockInfoModifySync::ModifyStockType()
+{
+    LOGDETAIL("【" << m_sDstTable << "】增量表同步，开始调整证券类别");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL CONTEXT USE :o4Ctx;
+    //ETF证券类别调整
+    EXEC SQL update jc_tstock a set a.stock_type = 84 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_stock_type='4' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 83 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_type = '2' and a.etf_stock_type='2' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 82 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_type <> '2' and a.etf_stock_type='2' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 77 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_stock_type='3' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 76 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_stock_type='5' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 59 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_type = '4' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 58 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_type = '3' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 57 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_type = '2' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+    EXEC SQL update jc_tstock a set a.stock_type = 55 where a.inter_code in (select b.inter_code from jc_tetfbasicinfo a, jc_tstock b where b.report_code in (a.report_code, a.etf_code1) and b.stock_type = 11 and a.etf_type = '1' and a.etf_stock_type = '1' and a.market_no=b.market_no);
+
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_UPDATE, "【%s】增量表同步，调整证券类别失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        EXEC SQL ROLLBACK;
+        return false;
+    }
+    EXEC SQL COMMIT;
+    LOGDETAIL("【" << m_sDstTable << "】增量表同步，调整证券类别完成");
+    return true;
+}

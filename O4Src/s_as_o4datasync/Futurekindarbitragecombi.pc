@@ -1,0 +1,161 @@
+#include "Futurekindarbitragecombi.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CFutureKindArbitrageCombiSync::CFutureKindArbitrageCombiSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tfuturekindarbitragecombi");
+    strcpy(m_sSrcView, "VO4JC_FUTUREKINDARBITRAGECOMBI");
+    strcpy(m_sTmpTable, "SYNC_FUTUREKINDARBITRAGECOMBI");
+    strcpy(m_sDstTable, "jc_tfuturekindarbitragecombi");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CFutureKindArbitrageCombiSync::~CFutureKindArbitrageCombiSync()
+{
+}
+
+bool CFutureKindArbitrageCombiSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct FutureKindArbitrageCombiRecord
+    {
+        int business_date[BATCH_ROWS];
+        int arbitragecombi_id[BATCH_ROWS];
+        char arbitragecombi_name[BATCH_ROWS][65];
+        int fund_id[BATCH_ROWS];
+        char future_kind_no_list[BATCH_ROWS][129];
+    } FutureKindArbitrageCombiRecord;
+    FutureKindArbitrageCombiRecord *lpFutureKindArbitrageCombiRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpFutureKindArbitrageCombiRecord =  new FutureKindArbitrageCombiRecord();
+    if (NULL == lpFutureKindArbitrageCombiRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【FutureKindArbitrageCombiRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpFutureKindArbitrageCombiRecord, 0, sizeof (FutureKindArbitrageCombiRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select business_date,arbitragecombi_id,arbitragecombi_name,fund_id,future_kind_no_list
+        from VO4JC_FUTUREKINDARBITRAGECOMBI;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpFutureKindArbitrageCombiRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpFutureKindArbitrageCombiRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFutureKindArbitrageCombiRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into SYNC_FUTUREKINDARBITRAGECOMBI(business_date,arbitragecombi_id,arbitragecombi_name,fund_id,future_kind_no_list)
+             values(:lpFutureKindArbitrageCombiRecord->business_date,
+										:lpFutureKindArbitrageCombiRecord->arbitragecombi_id,
+										rtrim(:lpFutureKindArbitrageCombiRecord->arbitragecombi_name),
+										:lpFutureKindArbitrageCombiRecord->fund_id,
+										rtrim(:lpFutureKindArbitrageCombiRecord->future_kind_no_list));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFutureKindArbitrageCombiRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpFutureKindArbitrageCombiRecord;
+    return true;
+}
+
+bool CFutureKindArbitrageCombiSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME      VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME || '(' ||   "
+            "        ' BUSINESS_DATE,' ||  "
+            "        ' ARBITRAGECOMBI_ID,' ||  "
+            "        ' ARBITRAGECOMBI_NAME,' ||  "
+            "        ' FUND_ID,' ||  "
+            "        ' FUTURE_KIND_ID_LIST)' ||  "
+            "        ' SELECT T1.BUSINESS_DATE,' ||  "
+            "        ' T1.ARBITRAGECOMBI_ID,' ||  "
+            "        ' NVL(T1.ARBITRAGECOMBI_NAME, '' ''),' ||  "
+            "        ' T1.FUND_ID,' ||  "
+            "        ' NVL(T1.FUTURE_KIND_NO_LIST, '' '')' || "
+            "        '  FROM SYNC_FUTUREKINDARBITRAGECOMBI T1 ';"
+            ""
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+
+

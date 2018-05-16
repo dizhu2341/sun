@@ -1,0 +1,232 @@
+#include "HktzxxinfoSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CHktzxxinfoSync::CHktzxxinfoSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "thktzxxinfo");
+    strcpy(m_sSrcView, "VO4JC_HKTZXXINFO");
+    strcpy(m_sTmpTable, "sync_hktzxxinfo");
+    strcpy(m_sDstTable, "jc_thktzxxinfo");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CHktzxxinfoSync::~CHktzxxinfoSync()
+{
+}
+
+bool CHktzxxinfoSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct HktzxxinfoRecord
+    {
+        char  scdm[BATCH_ROWS][2];
+        char  tzlb[BATCH_ROWS][4];
+        int   tzrq[BATCH_ROWS];
+        char  qsbh[BATCH_ROWS][9];
+        char  zqdm[BATCH_ROWS][9];
+        char  zqlb[BATCH_ROWS][3];
+        char  ltlx[BATCH_ROWS][2];
+        char  qylb[BATCH_ROWS][3];
+        int   gpnf[BATCH_ROWS];
+        int   qycs[BATCH_ROWS];
+        char  zh1[BATCH_ROWS][26];
+        char  zh2[BATCH_ROWS][26];
+        int   rq1[BATCH_ROWS];
+        int   rq2[BATCH_ROWS];
+        int   rq3[BATCH_ROWS];
+        double  je1[BATCH_ROWS];
+        double  je2[BATCH_ROWS];
+        double  je3[BATCH_ROWS];
+        double  jg1[BATCH_ROWS];
+        double  jg2[BATCH_ROWS];
+        char    bz[BATCH_ROWS][4];
+        double  wbhl[BATCH_ROWS];
+        double  bl1[BATCH_ROWS];
+        double  bl2[BATCH_ROWS];
+        double  sl1[BATCH_ROWS];
+        double  sl2[BATCH_ROWS];
+        char    lx1[BATCH_ROWS][4];
+        char    lx2[BATCH_ROWS][4];
+        char    fzdm1[BATCH_ROWS][21];
+        char    fzdm2[BATCH_ROWS][21];
+        char    fjsm1[BATCH_ROWS][81];
+        char    fjsm2[BATCH_ROWS][81];
+        char    byzd[BATCH_ROWS][41];
+    } HktzxxinfoRecord;
+    HktzxxinfoRecord *lpHktzxxinfoRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpHktzxxinfoRecord =  new HktzxxinfoRecord();
+    if (NULL == lpHktzxxinfoRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【HktzxxinfoRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpHktzxxinfoRecord, 0, sizeof (HktzxxinfoRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        SELECT 
+        SCDM,                  TZLB,                TZRQ,           QSBH,           ZQDM,               ZQLB,               LTLX,                  
+        QYLB,                  GPNF,                QYCS,           ZH1,            ZH2,                RQ1,
+        RQ2,                   RQ3,                 JE1,            JE2,            JE3,                JG1,      
+        JG2,                   BZ,                  WBHL,           BL1,            BL2,                SL1,            
+        SL2,                   LX1,                 LX2,            FZDM1,          FZDM2,              FJSM1,                 
+        FJSM2,                 BYZD
+        FROM VO4JC_HKTZXXINFO;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpHktzxxinfoRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpHktzxxinfoRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpHktzxxinfoRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+              insert into sync_hktzxxinfo(
+                    SCDM,                  TZLB,                TZRQ,           QSBH,           ZQDM,        ZQLB,               LTLX,                  
+                    QYLB,                  GPNF,                QYCS,           ZH1,            ZH2,                RQ1,
+                    RQ2,                   RQ3,                 JE1,            JE2,            JE3,                JG1,      
+                    JG2,                   BZ,                  WBHL,           BL1,            BL2,                SL1,            
+                    SL2,                   LX1,                 LX2,            FZDM1,          FZDM2,              FJSM1,                 
+                    FJSM2,                 BYZD)
+             values(rtrim(:lpHktzxxinfoRecord->scdm),
+                    rtrim(:lpHktzxxinfoRecord->tzlb),           
+                    :lpHktzxxinfoRecord->tzrq, 
+                    rtrim(:lpHktzxxinfoRecord->qsbh),
+                    rtrim(:lpHktzxxinfoRecord->zqdm),
+                    rtrim(:lpHktzxxinfoRecord->zqlb),
+                    rtrim(:lpHktzxxinfoRecord->ltlx),
+                    rtrim(:lpHktzxxinfoRecord->qylb),
+                    :lpHktzxxinfoRecord->gpnf,
+                    :lpHktzxxinfoRecord->qycs,
+                    rtrim(:lpHktzxxinfoRecord->zh1),
+                    rtrim(:lpHktzxxinfoRecord->zh2),
+                    :lpHktzxxinfoRecord->rq1,
+                    :lpHktzxxinfoRecord->rq2,
+                    :lpHktzxxinfoRecord->rq3,
+                    :lpHktzxxinfoRecord->je1,
+                    :lpHktzxxinfoRecord->je2,
+                    :lpHktzxxinfoRecord->je3,
+                    :lpHktzxxinfoRecord->jg1,
+                    :lpHktzxxinfoRecord->jg2,
+                    rtrim(:lpHktzxxinfoRecord->bz),
+                    :lpHktzxxinfoRecord->wbhl,
+                    :lpHktzxxinfoRecord->bl1,
+                    :lpHktzxxinfoRecord->bl2,
+                    :lpHktzxxinfoRecord->sl1,
+                    :lpHktzxxinfoRecord->sl2,
+                    rtrim(:lpHktzxxinfoRecord->lx1),
+                    rtrim(:lpHktzxxinfoRecord->lx2),
+                    rtrim(:lpHktzxxinfoRecord->fzdm1),
+                    rtrim(:lpHktzxxinfoRecord->fzdm2),
+                    rtrim(:lpHktzxxinfoRecord->fjsm1),
+                    rtrim(:lpHktzxxinfoRecord->fjsm2),
+                    rtrim(:lpHktzxxinfoRecord->byzd));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpHktzxxinfoRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpHktzxxinfoRecord;
+    return true;
+}
+
+bool CHktzxxinfoSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '||V_TABLE_NAME_O4||' (' ||"
+            "                    '   MARKET_NO,             TZLB,               TZRQ,            QSBH,           REPORT_CODE,        STOCK_TYPE,               LTLX, '||"
+            "                    '   QYLB,                  GPNF,                QYCS,           ZH1,            ZH2,                RQ1,' ||"
+            "                    '   RQ2,                   RQ3,                 JE1,            JE2,            JE3,                JG1,' ||"
+            "                    '   JG2,                   BZ,                  WBHL,           BL1,            BL2,                SL1,'  ||"
+            "                    '   SL2,                   LX1,                 LX2,            FZDM1,          FZDM2,' ||"
+            "                    '   FJSM1,                 FJSM2,               BYZD)' ||  "
+            "                    '  SELECT C.MARKET_NO,      NVL( A.TZLB, '' ''),           A.TZRQ,             NVL( A.QSBH, '' ''),        NVL( A.ZQDM, '' ''),        B.STOCK_TYPE,             NVL(A.LTLX, '' ''), ' || "
+            "                    '   NVL(A.QYLB, '' ''),     A.GPNF,                        A.QYCS,             NVL(A.ZH1, '' ''),          NVL(A.ZH2, '' ''),          A.RQ1,' || "
+            "                    '   A.RQ2,                  A.RQ3,                         A.JE1,              A.JE2,                      A.JE3,                      A.JG1, '   ||  "
+            "                    '   A.JG2,                  NVL(A.BZ, '' ''),              A.WBHL,             A.BL1,                      A.BL2,                      A.SL1,'  ||  "
+            "                    '   A.SL2,                  NVL(A.LX1, '' ''),             NVL(A.LX2, '' ''),  NVL(A.FZDM1, '' ''),        NVL(A.FZDM2, '' ''),  ' ||"
+            "                    '   NVL(A.FJSM1, '' ''),    NVL(A.FJSM2, '' ''),           NVL(A.BYZD, '' '')    '||"
+            "                    '   FROM '||V_TABLE_NAME_TMP||'  A,JC_TCONVERTSTOCKTYPE B, JC_TCONVERTMARKETNO C'|| "
+            "                    '  WHERE A.SCDM = C.MARKET_NO_SRC AND A.ZQLB = B.STOCK_TYPE_SRC ';"
+            "   COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

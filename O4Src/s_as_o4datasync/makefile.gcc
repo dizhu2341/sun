@@ -1,0 +1,907 @@
+# *********************************************************************
+# Make文件注意：
+# 必须定义以下环境变量：
+#   windows: 
+#       ORACLE_HOME （例如：e:\oracle\ora10g）
+#       VC_HOME （例如：c:\program files\devstudio\vc\include）
+#   linux: 
+#       GCC_VER （例如：export GCC_VER = 3.2.3） 可以执行：g++ -v查找当前版本 }
+# 
+# 编译实例：
+#   windows: 
+#       执行版本:     nmake -fs_XXXXflow.mvc -D _DEBUG=1 ORA_VER=10  
+#   linux: 
+#       执行版本:       make -fs_XXXXflow.gcc ORA_VER=10  
+# 
+# *********************************************************************
+#obj扩展名定义$TO
+TO=o
+#proc文件扩展名定义$FROM
+FROM=pc
+OUTDIR = $(HOME)/appcom
+
+#要编译的组件名,构成组件的obj文件定义
+FC1 = DataInit
+FC2 = Common
+FC3 = Mutex
+FC4 = s_liblogpublic
+FC5 = s_glbfunction_or
+FC6 = s_jc_public
+FC37 = s_libpublic
+FC7 = DataSync
+FC8 = FundinfoSync
+FC9 = AssetSync
+FC10 = CombiSync
+FC11 = FundRightSync
+FC12 = StockSync
+FC13 = BondpropertySync
+FC14 = FuturesInfoSync
+FC15 = OptionSync
+FC16 = StockInfoModifySync
+FC17 = EntrustStockholderSync
+FC18 = StockholderSync
+FC19 = IssuerSync
+FC20 = TraderivalSync
+FC21 = FeehsSync
+FC22 = FeeqhSync
+FC23 = FeedetailhsSync
+FC24 = FeedetailqhSync
+FC25 = CapitalaccountSync
+FC26 = BondrateSync
+FC27 = AccountgroupSync
+FC28 = AccountgrouptypeSync
+FC29 = GroupfundcombiSync
+FC30 = TradeseatSync
+FC31 = AssetdaySync
+FC32 = UnitstockSync
+FC33 = RzrqcashSync
+FC34 = FtrenabledetailSync
+FC35 = HoldingdetailSync
+FC36 = TradedateSync
+FC38 = FuturecashSync
+FC39 = OptioncashSync
+FC40 = InstancestockSync
+FC41 = BusinessdealconfigSync
+FC42 = OutpendsettleSync
+FC43 = BankhgregisterSync
+FC44 = HgmortagageSync
+FC45 = OutconfirmSync
+FC46 = FundassetSync
+FC47 = AssetassetSync
+FC48 = HktzxxinfoSync
+FC49 = HgregisterSync
+FC50 = ManualcashSync
+FC51 = ManualstockSync
+FC52 = StockbusinessSync
+FC53 = UnfinishedbusinSync
+FC54 = PendsettleSync
+FC55 = CashbusinessSync
+FC56 = TradefundSync
+FC57 = AssetdayZscshSync
+FC58 = FuturecashZscshSync
+FC59 = OptioncashZscshSync
+FC60 = RzrqcashZscshSync
+FC61 = UnitstockZscshSync
+FC62 = InstancestockZscshSync
+FC63 = HgregisterZscshSync
+FC64 = ManualcashZscshSync
+FC65 = ManualstockZscshSync
+FC66 = CashbusinessZscshSync
+FC67 = StockbusinessZscshSync
+FC68 = UnfinishedbusinZscshSync
+FC69 = PendsettleZscshSync
+FC70 = HoldingdetailZscshSync
+FC71 = FtrenabledetailZscshSync
+FC72 = TradefundZscshSync
+FC73 = FuturedepositratioSync
+FC74 = SeatSync
+FC75 = SysteminfoSync
+FC76 = SecuritiesbranchSync
+FC77 = BonddetailpropertySync
+FC78 = EtfstocklistinfoSync
+FC79 = Futurekindarbitragecombi
+FC80 = HgratioSync
+FC81 = BrokerSync
+FC82 = EtfbasicinfoSync
+FC83 = RzrqstockSync
+FC84 = ZdjjhqSync
+FC85 = TradefeeconfighsSync
+FC86 = DeptSync
+FC87 = RzrqstocksetSync
+FC88 = SecuritiesbranchexSync
+FC89 = CorpactioninfoSync
+FC90 = RzrqconfigSync
+FC91 = CurrencyrateSync
+FC92 = InterestrateSync
+FC93 = SelfbankaccountSync
+FC94 = BankaccountSync
+FC95 = LoffundparamSync
+FC96 = SjsqqzhclSync
+FC97 = BankinfoSync
+FC98 = FuturekindSync
+FC99 = PriceintervalSync
+FC100 = BranchcaptacctinfoSync
+FC101 = OpacctgrouptyperightSync
+FC102 = ContainfeeSync
+FC103 = FeesetpropertySync
+FC104 = ContainfeesetSync
+FC105 = FeesethsSync
+FC106 = FeedetailsethsSync
+FC107 = EntrustapprovesetSync
+FC108 = OperatorstatusSync
+FC109 = TainfoSync
+FC110 = TadealconfigSync
+FC111 = OptiondepositsetSync
+FC112 = CompanySync
+FC113 = CustomclassSync
+FC114 = CustomdictionarySync
+FC115 = SquenceSync
+FC116 = OperatorSync
+FC117 = SysparamvalueSync
+FC118 = MarketinfoSync
+FC119 = FuturearbitrageinfoSync
+FC120 = SzfundestimateSync
+FC121 = FinancedebitSync
+FC122 = OptioncombiSync
+FC123 = SubjectdataSync
+FC124 = SubjectdataZscshSync
+FC125 = InvestfundinfoSync
+FC126 = FutureguaranteedsecuritySync
+FC127 = BusinessspecialSync
+FC128 = OutconfirmZscshSync
+FC129 = DearMoneySecuritySync
+FC130 = StockissueinfoSync
+FC131 = SyncLock
+FC132 = OrganizationSync
+FC133 = HisRealDealSync
+FC134 = Stockbusiness_xh
+FC135 = Stockbusiness_qh
+FC136 = Stockbusiness_cw
+FC137 = Stockbusiness_yhj
+FC138 = Stockfrozendetail_xh
+FC139 = Stockfrozendetail_qh
+FC140 = Stockfrozendetail_cw
+FC141 = Stockfrozendetail_yhj
+FC142 = Unitstock_xh
+FC143 = Unitstock_xh_sync
+FC144 = Unitstock_qh
+FC145 = Unitstock_qh_sync
+FC146 = Unitstock_cw
+FC147 = Unitstock_cw_sync
+FC148 = Unitstock_yhj
+FC149 = Financedebit_redo
+FC150 = Fundasset_redo
+FC151 = Bankuncomplete
+FC152 = Subjectbusiness
+FC153 = Mortgageinfo
+FC154 = Mortgageinfo_redo
+FC155 = Subjectstock
+FC156 = Subjectstock_redo
+FC157 = Otcdealsettuncomp
+FC158 = Otcdealsettuncomp_redo
+FC159 = Instancestock_yhj
+FC160 = Instancestock_xh
+FC161 = Instancestock_qh
+FC162 = Instancestock_xh_redo
+FC163 = Instancestock_qh_redo
+FC164 = Optioncombi_redo
+
+OBJS1 =  $(FC1).$(TO) $(FC2).$(TO) $(FC3).$(TO) $(FC7).$(TO) $(FC8).$(TO) $(FC9).$(TO) $(FC10).$(TO) $(FC11).$(TO) \
+$(FC12).$(TO) $(FC13).$(TO) $(FC14).$(TO) $(FC15).$(TO) $(FC16).$(TO) $(FC17).$(TO) $(FC18).$(TO) $(FC19).$(TO) \
+$(FC20).$(TO) $(FC21).$(TO) $(FC22).$(TO) $(FC23).$(TO) $(FC24).$(TO) $(FC25).$(TO) $(FC26).$(TO) $(FC27).$(TO) \
+$(FC28).$(TO) $(FC29).$(TO) $(FC30).$(TO) $(FC31).$(TO) $(FC32).$(TO) $(FC33).$(TO) $(FC34).$(TO) $(FC35).$(TO) \
+$(FC36).$(TO) $(FC38).$(TO) $(FC39).$(TO) $(FC40).$(TO) $(FC41).$(TO) $(FC42).$(TO) $(FC43).$(TO) $(FC44).$(TO) \
+$(FC45).$(TO) $(FC46).$(TO) $(FC47).$(TO) $(FC48).$(TO) $(FC49).$(TO) $(FC50).$(TO) $(FC51).$(TO) $(FC52).$(TO) \
+$(FC53).$(TO) $(FC54).$(TO) $(FC55).$(TO) $(FC56).$(TO) $(FC57).$(TO) $(FC58).$(TO) $(FC59).$(TO) $(FC60).$(TO) \
+$(FC61).$(TO) $(FC62).$(TO) $(FC63).$(TO) $(FC64).$(TO) $(FC65).$(TO) $(FC66).$(TO) $(FC67).$(TO) $(FC68).$(TO) \
+$(FC69).$(TO) $(FC70).$(TO) $(FC71).$(TO) $(FC72).$(TO) $(FC73).$(TO) $(FC74).$(TO) $(FC75).$(TO) $(FC76).$(TO) \
+$(FC77).$(TO) $(FC78).$(TO) $(FC79).$(TO) $(FC80).$(TO) $(FC81).$(TO) $(FC82).$(TO) $(FC83).$(TO) $(FC84).$(TO) \
+$(FC85).$(TO) $(FC86).$(TO) $(FC87).$(TO) $(FC88).$(TO) $(FC89).$(TO) $(FC90).$(TO) $(FC91).$(TO) $(FC92).$(TO) \
+$(FC93).$(TO) $(FC94).$(TO) $(FC95).$(TO) $(FC96).$(TO) $(FC97).$(TO) $(FC98).$(TO) $(FC99).$(TO) $(FC100).$(TO) \
+$(FC101).$(TO) $(FC102).$(TO) $(FC103).$(TO) $(FC104).$(TO) $(FC105).$(TO) $(FC106).$(TO) $(FC107).$(TO) $(FC108).$(TO) \
+$(FC109).$(TO) $(FC110).$(TO) $(FC111).$(TO) $(FC112).$(TO) $(FC113).$(TO) $(FC114).$(TO) $(FC115).$(TO) $(FC116).$(TO) \
+$(FC117).$(TO) $(FC118).$(TO) $(FC119).$(TO) $(FC120).$(TO) $(FC121).$(TO) $(FC122).$(TO) $(FC123).$(TO) $(FC124).$(TO) \
+$(FC125).$(TO) $(FC126).$(TO) $(FC127).$(TO) $(FC128).$(TO) $(FC129).$(TO) $(FC130).$(TO) $(FC131).$(TO) $(FC132).$(TO) \
+$(FC133).$(TO) $(FC134).$(TO) $(FC135).$(TO) $(FC136).$(TO) $(FC137).$(TO) $(FC138).$(TO) $(FC139).$(TO) $(FC140).$(TO) $(FC141).$(TO) \
+$(FC142).$(TO) $(FC143).$(TO) $(FC144).$(TO) $(FC145).$(TO) $(FC146).$(TO) $(FC147).$(TO) $(FC148).$(TO) $(FC149).$(TO) $(FC150).$(TO) \
+$(FC151).$(TO) $(FC152).$(TO) $(FC153).$(TO) $(FC154).$(TO) $(FC155).$(TO) $(FC156).$(TO) $(FC157).$(TO) $(FC158).$(TO) $(FC159).$(TO) \
+$(FC160).$(TO) $(FC161).$(TO) $(FC162).$(TO) $(FC163).$(TO) $(FC164).$(TO)
+
+#PROC预处理器
+PROC = $(ORACLE_HOME)/bin/proc
+#CPP编译器
+CC = g++
+
+#预编译选项
+CPP_PROFLAGS = ireclen=132 \
+oreclen=132 \
+char_map=string \
+close_on_commit=yes \
+code=cpp \
+cpp_suffix=cpp \
+def_sqlcode=yes \
+define=USE_PRO_C \
+hold_cursor=yes \
+maxopencursors=60 \
+dbms=v8 \
+mode=oracle \
+unsafe_null=yes \
+parse=partial \
+prefetch=200 \
+select_error=yes \
+sqlcheck=none \
+threads=yes \
+sys_include=/usr/include/c++/4.4.4/x86_64-redhat-linux \
+sys_include=/usr/include/c++/4.4.4 \
+sys_include=/usr/lib/gcc/x86_64-redhat-linux/4.4.4/include \
+include=$(ORACLE_HOME)/precomp/public\
+include=$(ORACLE_HOME)/oci/include\
+include=$(HOME)/src\
+include=$(GCC_LIB)
+
+
+#(-Dxxx should be added to DEFS macro):
+DEFS =-D OS_UNIX
+
+
+#option 编译，连接选项
+CFLAGS = -c -fPIC $(DEFS)
+LDFLAGS = -shared
+STDLIBS = -lc -lnsl -ldl -lm -lstdc++ -lpthread
+LIBPATH=$(OUTDIR)
+DBLIB = -L$(ORACLE_HOME)/lib -lclntsh -L$(ORACLE_HOME)/lib  -lsql$(ORA_VER)
+HSLIB = -L$(OUTDIR) -l$(FC6) -l$(FC4) -l$(FC5) -l$(FC37)
+
+#头文件路径
+INCLALL =  -I$(HOME)/src  -I$(ORACLE_HOME)/precomp/public  -I$(ORACLE_HOME)/oci/include  -I$(FBASE_HOME)/ 
+
+#debug版本
+ifdef _DEBUG
+DEFS = -D_DEBUG
+CFLAGS = -c -g -fPIC $(DEFS)
+endif
+all:$(FC1)
+
+$(FC1):$(OBJS1)
+	$(CC)  $(LDFLAGS) $(OBJS1) $(STDLIBS) $(DBLIB) $(HSLIB) -o$(OUTDIR)/libs_as_o4datasync.so $(LIBS) $(EXP)
+
+$(FC1).$(TO):$(FC1).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC1).$(FROM) oname=$(FC1).cpp
+	$(CC) $(CFLAGS) $(FC1).cpp $(INCLALL)
+
+$(FC2).$(TO):$(FC2).cpp
+	$(CC) $(CFLAGS) $(FC2).cpp $(INCLALL)
+
+$(FC3).$(TO):$(FC3).cpp
+	$(CC) $(CFLAGS) $(FC3).cpp $(INCLALL)
+
+$(FC7).$(TO):$(FC7).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC7).$(FROM) oname=$(FC7).cpp
+	$(CC) $(CFLAGS) $(FC7).cpp $(INCLALL)
+
+$(FC8).$(TO):$(FC8).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC8).$(FROM) oname=$(FC8).cpp
+	$(CC) $(CFLAGS) $(FC8).cpp $(INCLALL)
+
+$(FC9).$(TO):$(FC9).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC9).$(FROM) oname=$(FC9).cpp
+	$(CC) $(CFLAGS) $(FC9).cpp $(INCLALL)
+
+$(FC10).$(TO):$(FC10).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC10).$(FROM) oname=$(FC10).cpp
+	$(CC) $(CFLAGS) $(FC10).cpp $(INCLALL)
+
+$(FC11).$(TO):$(FC11).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC11).$(FROM) oname=$(FC11).cpp
+	$(CC) $(CFLAGS) $(FC11).cpp $(INCLALL)
+
+$(FC12).$(TO):$(FC12).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC12).$(FROM) oname=$(FC12).cpp
+	$(CC) $(CFLAGS) $(FC12).cpp $(INCLALL)
+
+$(FC13).$(TO):$(FC13).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC13).$(FROM) oname=$(FC13).cpp
+	$(CC) $(CFLAGS) $(FC13).cpp $(INCLALL)
+
+$(FC14).$(TO):$(FC14).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC14).$(FROM) oname=$(FC14).cpp
+	$(CC) $(CFLAGS) $(FC14).cpp $(INCLALL)
+
+$(FC15).$(TO):$(FC15).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC15).$(FROM) oname=$(FC15).cpp
+	$(CC) $(CFLAGS) $(FC15).cpp $(INCLALL)
+
+$(FC16).$(TO):$(FC16).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC16).$(FROM) oname=$(FC16).cpp
+	$(CC) $(CFLAGS) $(FC16).cpp $(INCLALL)
+
+$(FC17).$(TO):$(FC17).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC17).$(FROM) oname=$(FC17).cpp
+	$(CC) $(CFLAGS) $(FC17).cpp $(INCLALL)
+
+$(FC18).$(TO):$(FC18).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC18).$(FROM) oname=$(FC18).cpp
+	$(CC) $(CFLAGS) $(FC18).cpp $(INCLALL)
+
+$(FC19).$(TO):$(FC19).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC19).$(FROM) oname=$(FC19).cpp
+	$(CC) $(CFLAGS) $(FC19).cpp $(INCLALL)
+
+$(FC20).$(TO):$(FC20).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC20).$(FROM) oname=$(FC20).cpp
+	$(CC) $(CFLAGS) $(FC20).cpp $(INCLALL)
+
+$(FC21).$(TO):$(FC21).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC21).$(FROM) oname=$(FC21).cpp
+	$(CC) $(CFLAGS) $(FC21).cpp $(INCLALL)
+
+$(FC22).$(TO):$(FC22).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC22).$(FROM) oname=$(FC22).cpp
+	$(CC) $(CFLAGS) $(FC22).cpp $(INCLALL)
+
+$(FC23).$(TO):$(FC23).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC23).$(FROM) oname=$(FC23).cpp
+	$(CC) $(CFLAGS) $(FC23).cpp $(INCLALL)
+
+$(FC24).$(TO):$(FC24).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC24).$(FROM) oname=$(FC24).cpp
+	$(CC) $(CFLAGS) $(FC24).cpp $(INCLALL)
+
+$(FC25).$(TO):$(FC25).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC25).$(FROM) oname=$(FC25).cpp
+	$(CC) $(CFLAGS) $(FC25).cpp $(INCLALL)
+
+$(FC26).$(TO):$(FC26).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC26).$(FROM) oname=$(FC26).cpp
+	$(CC) $(CFLAGS) $(FC26).cpp $(INCLALL)
+
+$(FC27).$(TO):$(FC27).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC27).$(FROM) oname=$(FC27).cpp
+	$(CC) $(CFLAGS) $(FC27).cpp $(INCLALL)
+
+$(FC28).$(TO):$(FC28).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC28).$(FROM) oname=$(FC28).cpp
+	$(CC) $(CFLAGS) $(FC28).cpp $(INCLALL)
+
+$(FC29).$(TO):$(FC29).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC29).$(FROM) oname=$(FC29).cpp
+	$(CC) $(CFLAGS) $(FC29).cpp $(INCLALL)
+
+$(FC30).$(TO):$(FC30).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC30).$(FROM) oname=$(FC30).cpp
+	$(CC) $(CFLAGS) $(FC30).cpp $(INCLALL)
+
+$(FC31).$(TO):$(FC31).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC31).$(FROM) oname=$(FC31).cpp
+	$(CC) $(CFLAGS) $(FC31).cpp $(INCLALL)
+
+$(FC32).$(TO):$(FC32).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC32).$(FROM) oname=$(FC32).cpp
+	$(CC) $(CFLAGS) $(FC32).cpp $(INCLALL)
+
+$(FC33).$(TO):$(FC33).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC33).$(FROM) oname=$(FC33).cpp
+	$(CC) $(CFLAGS) $(FC33).cpp $(INCLALL)
+
+$(FC34).$(TO):$(FC34).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC34).$(FROM) oname=$(FC34).cpp
+	$(CC) $(CFLAGS) $(FC34).cpp $(INCLALL)
+
+$(FC35).$(TO):$(FC35).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC35).$(FROM) oname=$(FC35).cpp
+	$(CC) $(CFLAGS) $(FC35).cpp $(INCLALL)
+
+$(FC36).$(TO):$(FC36).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC36).$(FROM) oname=$(FC36).cpp
+	$(CC) $(CFLAGS) $(FC36).cpp $(INCLALL)
+
+$(FC38).$(TO):$(FC38).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC38).$(FROM) oname=$(FC38).cpp
+	$(CC) $(CFLAGS) $(FC38).cpp $(INCLALL)
+
+$(FC39).$(TO):$(FC39).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC39).$(FROM) oname=$(FC39).cpp
+	$(CC) $(CFLAGS) $(FC39).cpp $(INCLALL)
+
+$(FC40).$(TO):$(FC40).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC40).$(FROM) oname=$(FC40).cpp
+	$(CC) $(CFLAGS) $(FC40).cpp $(INCLALL)
+
+$(FC41).$(TO):$(FC41).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC41).$(FROM) oname=$(FC41).cpp
+	$(CC) $(CFLAGS) $(FC41).cpp $(INCLALL)
+
+$(FC42).$(TO):$(FC42).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC42).$(FROM) oname=$(FC42).cpp
+	$(CC) $(CFLAGS) $(FC42).cpp $(INCLALL)
+
+$(FC43).$(TO):$(FC43).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC43).$(FROM) oname=$(FC43).cpp
+	$(CC) $(CFLAGS) $(FC43).cpp $(INCLALL)
+
+$(FC44).$(TO):$(FC44).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC44).$(FROM) oname=$(FC44).cpp
+	$(CC) $(CFLAGS) $(FC44).cpp $(INCLALL)
+
+$(FC45).$(TO):$(FC45).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC45).$(FROM) oname=$(FC45).cpp
+	$(CC) $(CFLAGS) $(FC45).cpp $(INCLALL)
+
+$(FC46).$(TO):$(FC46).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC46).$(FROM) oname=$(FC46).cpp
+	$(CC) $(CFLAGS) $(FC46).cpp $(INCLALL)
+
+$(FC47).$(TO):$(FC47).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC47).$(FROM) oname=$(FC47).cpp
+	$(CC) $(CFLAGS) $(FC47).cpp $(INCLALL)
+
+$(FC48).$(TO):$(FC48).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC48).$(FROM) oname=$(FC48).cpp
+	$(CC) $(CFLAGS) $(FC48).cpp $(INCLALL)
+
+$(FC49).$(TO):$(FC49).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC49).$(FROM) oname=$(FC49).cpp
+	$(CC) $(CFLAGS) $(FC49).cpp $(INCLALL)
+
+$(FC50).$(TO):$(FC50).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC50).$(FROM) oname=$(FC50).cpp
+	$(CC) $(CFLAGS) $(FC50).cpp $(INCLALL)
+
+$(FC51).$(TO):$(FC51).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC51).$(FROM) oname=$(FC51).cpp
+	$(CC) $(CFLAGS) $(FC51).cpp $(INCLALL)
+
+$(FC52).$(TO):$(FC52).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC52).$(FROM) oname=$(FC52).cpp
+	$(CC) $(CFLAGS) $(FC52).cpp $(INCLALL)
+
+$(FC53).$(TO):$(FC53).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC53).$(FROM) oname=$(FC53).cpp
+	$(CC) $(CFLAGS) $(FC53).cpp $(INCLALL)
+
+$(FC54).$(TO):$(FC54).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC54).$(FROM) oname=$(FC54).cpp
+	$(CC) $(CFLAGS) $(FC54).cpp $(INCLALL)
+
+$(FC55).$(TO):$(FC55).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC55).$(FROM) oname=$(FC55).cpp
+	$(CC) $(CFLAGS) $(FC55).cpp $(INCLALL)
+
+$(FC56).$(TO):$(FC56).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC56).$(FROM) oname=$(FC56).cpp
+	$(CC) $(CFLAGS) $(FC56).cpp $(INCLALL)
+
+$(FC57).$(TO):$(FC56).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC57).$(FROM) oname=$(FC57).cpp
+	$(CC) $(CFLAGS) $(FC57).cpp $(INCLALL)
+
+$(FC58).$(TO):$(FC58).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC58).$(FROM) oname=$(FC58).cpp
+	$(CC) $(CFLAGS) $(FC58).cpp $(INCLALL)
+
+$(FC59).$(TO):$(FC59).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC59).$(FROM) oname=$(FC59).cpp
+	$(CC) $(CFLAGS) $(FC59).cpp $(INCLALL)
+
+$(FC60).$(TO):$(FC60).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC60).$(FROM) oname=$(FC60).cpp
+	$(CC) $(CFLAGS) $(FC60).cpp $(INCLALL)
+
+$(FC61).$(TO):$(FC61).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC61).$(FROM) oname=$(FC61).cpp
+	$(CC) $(CFLAGS) $(FC61).cpp $(INCLALL)
+
+$(FC62).$(TO):$(FC62).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC62).$(FROM) oname=$(FC62).cpp
+	$(CC) $(CFLAGS) $(FC62).cpp $(INCLALL)
+
+$(FC63).$(TO):$(FC63).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC63).$(FROM) oname=$(FC63).cpp
+	$(CC) $(CFLAGS) $(FC63).cpp $(INCLALL)
+
+$(FC64).$(TO):$(FC64).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC64).$(FROM) oname=$(FC64).cpp
+	$(CC) $(CFLAGS) $(FC64).cpp $(INCLALL)
+
+$(FC65).$(TO):$(FC65).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC65).$(FROM) oname=$(FC65).cpp
+	$(CC) $(CFLAGS) $(FC65).cpp $(INCLALL)
+
+$(FC66).$(TO):$(FC66).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC66).$(FROM) oname=$(FC66).cpp
+	$(CC) $(CFLAGS) $(FC66).cpp $(INCLALL)
+
+$(FC67).$(TO):$(FC67).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC67).$(FROM) oname=$(FC67).cpp
+	$(CC) $(CFLAGS) $(FC67).cpp $(INCLALL)
+
+$(FC68).$(TO):$(FC68).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC68).$(FROM) oname=$(FC68).cpp
+	$(CC) $(CFLAGS) $(FC68).cpp $(INCLALL)
+
+$(FC69).$(TO):$(FC69).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC69).$(FROM) oname=$(FC69).cpp
+	$(CC) $(CFLAGS) $(FC69).cpp $(INCLALL)
+
+$(FC70).$(TO):$(FC70).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC70).$(FROM) oname=$(FC70).cpp
+	$(CC) $(CFLAGS) $(FC70).cpp $(INCLALL)
+
+$(FC71).$(TO):$(FC71).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC71).$(FROM) oname=$(FC71).cpp
+	$(CC) $(CFLAGS) $(FC71).cpp $(INCLALL)
+
+$(FC72).$(TO):$(FC72).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC72).$(FROM) oname=$(FC72).cpp
+	$(CC) $(CFLAGS) $(FC72).cpp $(INCLALL)
+
+$(FC73).$(TO):$(FC73).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC73).$(FROM) oname=$(FC73).cpp
+	$(CC) $(CFLAGS) $(FC73).cpp $(INCLALL)
+
+$(FC74).$(TO):$(FC74).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC74).$(FROM) oname=$(FC74).cpp
+	$(CC) $(CFLAGS) $(FC74).cpp $(INCLALL)
+
+$(FC75).$(TO):$(FC75).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC75).$(FROM) oname=$(FC75).cpp
+	$(CC) $(CFLAGS) $(FC75).cpp $(INCLALL)
+
+$(FC76).$(TO):$(FC76).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC76).$(FROM) oname=$(FC76).cpp
+	$(CC) $(CFLAGS) $(FC76).cpp $(INCLALL)
+
+$(FC77).$(TO):$(FC77).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC77).$(FROM) oname=$(FC77).cpp
+	$(CC) $(CFLAGS) $(FC77).cpp $(INCLALL)
+
+$(FC78).$(TO):$(FC78).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC78).$(FROM) oname=$(FC78).cpp
+	$(CC) $(CFLAGS) $(FC78).cpp $(INCLALL)
+
+$(FC79).$(TO):$(FC79).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC79).$(FROM) oname=$(FC79).cpp
+	$(CC) $(CFLAGS) $(FC79).cpp $(INCLALL)
+
+$(FC80).$(TO):$(FC80).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC80).$(FROM) oname=$(FC80).cpp
+	$(CC) $(CFLAGS) $(FC80).cpp $(INCLALL)
+
+$(FC81).$(TO):$(FC81).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC81).$(FROM) oname=$(FC81).cpp
+	$(CC) $(CFLAGS) $(FC81).cpp $(INCLALL)
+
+$(FC82).$(TO):$(FC82).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC82).$(FROM) oname=$(FC82).cpp
+	$(CC) $(CFLAGS) $(FC82).cpp $(INCLALL)
+
+$(FC83).$(TO):$(FC83).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC83).$(FROM) oname=$(FC83).cpp
+	$(CC) $(CFLAGS) $(FC83).cpp $(INCLALL)
+
+$(FC84).$(TO):$(FC84).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC84).$(FROM) oname=$(FC84).cpp
+	$(CC) $(CFLAGS) $(FC84).cpp $(INCLALL)
+
+$(FC85).$(TO):$(FC85).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC85).$(FROM) oname=$(FC85).cpp
+	$(CC) $(CFLAGS) $(FC85).cpp $(INCLALL)
+
+$(FC86).$(TO):$(FC86).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC86).$(FROM) oname=$(FC86).cpp
+	$(CC) $(CFLAGS) $(FC86).cpp $(INCLALL)
+
+$(FC87).$(TO):$(FC87).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC87).$(FROM) oname=$(FC87).cpp
+	$(CC) $(CFLAGS) $(FC87).cpp $(INCLALL)
+
+$(FC88).$(TO):$(FC88).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC88).$(FROM) oname=$(FC88).cpp
+	$(CC) $(CFLAGS) $(FC88).cpp $(INCLALL)
+
+$(FC89).$(TO):$(FC89).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC89).$(FROM) oname=$(FC89).cpp
+	$(CC) $(CFLAGS) $(FC89).cpp $(INCLALL)
+
+$(FC90).$(TO):$(FC90).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC90).$(FROM) oname=$(FC90).cpp
+	$(CC) $(CFLAGS) $(FC90).cpp $(INCLALL)
+
+$(FC91).$(TO):$(FC91).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC91).$(FROM) oname=$(FC91).cpp
+	$(CC) $(CFLAGS) $(FC91).cpp $(INCLALL)
+
+$(FC92).$(TO):$(FC92).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC92).$(FROM) oname=$(FC92).cpp
+	$(CC) $(CFLAGS) $(FC92).cpp $(INCLALL)
+
+$(FC93).$(TO):$(FC93).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC93).$(FROM) oname=$(FC93).cpp
+	$(CC) $(CFLAGS) $(FC93).cpp $(INCLALL)
+
+$(FC94).$(TO):$(FC94).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC94).$(FROM) oname=$(FC94).cpp
+	$(CC) $(CFLAGS) $(FC94).cpp $(INCLALL)
+
+$(FC95).$(TO):$(FC95).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC95).$(FROM) oname=$(FC95).cpp
+	$(CC) $(CFLAGS) $(FC95).cpp $(INCLALL)
+
+$(FC96).$(TO):$(FC96).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC96).$(FROM) oname=$(FC96).cpp
+	$(CC) $(CFLAGS) $(FC96).cpp $(INCLALL)
+
+$(FC97).$(TO):$(FC97).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC97).$(FROM) oname=$(FC97).cpp
+	$(CC) $(CFLAGS) $(FC97).cpp $(INCLALL)
+
+$(FC98).$(TO):$(FC98).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC98).$(FROM) oname=$(FC98).cpp
+	$(CC) $(CFLAGS) $(FC98).cpp $(INCLALL)
+
+$(FC99).$(TO):$(FC99).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC99).$(FROM) oname=$(FC99).cpp
+	$(CC) $(CFLAGS) $(FC99).cpp $(INCLALL)
+
+$(FC100).$(TO):$(FC100).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC100).$(FROM) oname=$(FC100).cpp
+	$(CC) $(CFLAGS) $(FC100).cpp $(INCLALL)
+
+$(FC101).$(TO):$(FC101).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC101).$(FROM) oname=$(FC101).cpp
+	$(CC) $(CFLAGS) $(FC101).cpp $(INCLALL)
+
+$(FC102).$(TO):$(FC102).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC102).$(FROM) oname=$(FC102).cpp
+	$(CC) $(CFLAGS) $(FC102).cpp $(INCLALL)
+
+$(FC103).$(TO):$(FC103).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC103).$(FROM) oname=$(FC103).cpp
+	$(CC) $(CFLAGS) $(FC103).cpp $(INCLALL)
+
+$(FC104).$(TO):$(FC104).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC104).$(FROM) oname=$(FC104).cpp
+	$(CC) $(CFLAGS) $(FC104).cpp $(INCLALL)
+
+$(FC105).$(TO):$(FC105).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC105).$(FROM) oname=$(FC105).cpp
+	$(CC) $(CFLAGS) $(FC105).cpp $(INCLALL)
+
+$(FC106).$(TO):$(FC106).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC106).$(FROM) oname=$(FC106).cpp
+	$(CC) $(CFLAGS) $(FC106).cpp $(INCLALL)
+
+$(FC107).$(TO):$(FC107).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC107).$(FROM) oname=$(FC107).cpp
+	$(CC) $(CFLAGS) $(FC107).cpp $(INCLALL)
+
+$(FC108).$(TO):$(FC108).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC108).$(FROM) oname=$(FC108).cpp
+	$(CC) $(CFLAGS) $(FC108).cpp $(INCLALL)
+
+$(FC109).$(TO):$(FC109).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC109).$(FROM) oname=$(FC109).cpp
+	$(CC) $(CFLAGS) $(FC109).cpp $(INCLALL)
+
+$(FC110).$(TO):$(FC110).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC110).$(FROM) oname=$(FC110).cpp
+	$(CC) $(CFLAGS) $(FC110).cpp $(INCLALL)
+
+$(FC111).$(TO):$(FC111).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC111).$(FROM) oname=$(FC111).cpp
+	$(CC) $(CFLAGS) $(FC111).cpp $(INCLALL)
+
+$(FC112).$(TO):$(FC112).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC112).$(FROM) oname=$(FC112).cpp
+	$(CC) $(CFLAGS) $(FC112).cpp $(INCLALL)
+
+$(FC113).$(TO):$(FC113).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC113).$(FROM) oname=$(FC113).cpp
+	$(CC) $(CFLAGS) $(FC113).cpp $(INCLALL)
+
+$(FC114).$(TO):$(FC114).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC114).$(FROM) oname=$(FC114).cpp
+	$(CC) $(CFLAGS) $(FC114).cpp $(INCLALL)
+
+$(FC115).$(TO):$(FC115).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC115).$(FROM) oname=$(FC115).cpp
+	$(CC) $(CFLAGS) $(FC115).cpp $(INCLALL)
+
+$(FC116).$(TO):$(FC116).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC116).$(FROM) oname=$(FC116).cpp
+	$(CC) $(CFLAGS) $(FC116).cpp $(INCLALL)
+
+$(FC117).$(TO):$(FC117).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC117).$(FROM) oname=$(FC117).cpp
+	$(CC) $(CFLAGS) $(FC117).cpp $(INCLALL)
+
+$(FC118).$(TO):$(FC118).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC118).$(FROM) oname=$(FC118).cpp
+	$(CC) $(CFLAGS) $(FC118).cpp $(INCLALL)
+
+$(FC119).$(TO):$(FC119).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC119).$(FROM) oname=$(FC119).cpp
+	$(CC) $(CFLAGS) $(FC119).cpp $(INCLALL)
+
+$(FC120).$(TO):$(FC120).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC120).$(FROM) oname=$(FC120).cpp
+	$(CC) $(CFLAGS) $(FC120).cpp $(INCLALL)
+
+$(FC121).$(TO):$(FC121).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC121).$(FROM) oname=$(FC121).cpp
+	$(CC) $(CFLAGS) $(FC121).cpp $(INCLALL)
+
+$(FC122).$(TO):$(FC122).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC122).$(FROM) oname=$(FC122).cpp
+	$(CC) $(CFLAGS) $(FC122).cpp $(INCLALL)
+
+$(FC123).$(TO):$(FC123).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC123).$(FROM) oname=$(FC123).cpp
+	$(CC) $(CFLAGS) $(FC123).cpp $(INCLALL)
+
+$(FC124).$(TO):$(FC124).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC124).$(FROM) oname=$(FC124).cpp
+	$(CC) $(CFLAGS) $(FC124).cpp $(INCLALL)
+
+$(FC125).$(TO):$(FC125).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC125).$(FROM) oname=$(FC125).cpp
+	$(CC) $(CFLAGS) $(FC125).cpp $(INCLALL)	
+
+$(FC126).$(TO):$(FC126).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC126).$(FROM) oname=$(FC126).cpp
+	$(CC) $(CFLAGS) $(FC126).cpp $(INCLALL)
+
+$(FC127).$(TO):$(FC127).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC127).$(FROM) oname=$(FC127).cpp
+	$(CC) $(CFLAGS) $(FC127).cpp $(INCLALL)
+
+$(FC128).$(TO):$(FC128).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC128).$(FROM) oname=$(FC128).cpp
+	$(CC) $(CFLAGS) $(FC128).cpp $(INCLALL)
+
+$(FC129).$(TO):$(FC129).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC129).$(FROM) oname=$(FC129).cpp
+	$(CC) $(CFLAGS) $(FC129).cpp $(INCLALL)
+
+$(FC130).$(TO):$(FC130).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC130).$(FROM) oname=$(FC130).cpp
+	$(CC) $(CFLAGS) $(FC130).cpp $(INCLALL)
+
+$(FC131).$(TO):$(FC131).cpp
+	$(CC) $(CFLAGS) $(FC131).cpp $(INCLALL)
+
+$(FC132).$(TO):$(FC132).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC132).$(FROM) oname=$(FC132).cpp
+	$(CC) $(CFLAGS) $(FC132).cpp $(INCLALL)
+
+$(FC133).$(TO):$(FC133).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC133).$(FROM) oname=$(FC133).cpp
+	$(CC) $(CFLAGS) $(FC133).cpp $(INCLALL)
+
+$(FC134).$(TO):$(FC134).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC134).$(FROM) oname=$(FC134).cpp
+	$(CC) $(CFLAGS) $(FC134).cpp $(INCLALL)
+
+$(FC135).$(TO):$(FC135).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC135).$(FROM) oname=$(FC135).cpp
+	$(CC) $(CFLAGS) $(FC135).cpp $(INCLALL)
+
+$(FC136).$(TO):$(FC136).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC136).$(FROM) oname=$(FC136).cpp
+	$(CC) $(CFLAGS) $(FC136).cpp $(INCLALL)
+
+$(FC137).$(TO):$(FC137).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC137).$(FROM) oname=$(FC137).cpp
+	$(CC) $(CFLAGS) $(FC137).cpp $(INCLALL)
+
+$(FC138).$(TO):$(FC138).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC138).$(FROM) oname=$(FC138).cpp
+	$(CC) $(CFLAGS) $(FC138).cpp $(INCLALL)
+
+$(FC139).$(TO):$(FC139).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC139).$(FROM) oname=$(FC139).cpp
+	$(CC) $(CFLAGS) $(FC139).cpp $(INCLALL)
+
+$(FC140).$(TO):$(FC140).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC140).$(FROM) oname=$(FC140).cpp
+	$(CC) $(CFLAGS) $(FC140).cpp $(INCLALL)
+
+$(FC141).$(TO):$(FC141).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC141).$(FROM) oname=$(FC141).cpp
+	$(CC) $(CFLAGS) $(FC141).cpp $(INCLALL)
+
+$(FC142).$(TO):$(FC142).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC142).$(FROM) oname=$(FC142).cpp
+	$(CC) $(CFLAGS) $(FC142).cpp $(INCLALL)
+
+$(FC143).$(TO):$(FC143).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC143).$(FROM) oname=$(FC143).cpp
+	$(CC) $(CFLAGS) $(FC143).cpp $(INCLALL)
+
+$(FC144).$(TO):$(FC144).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC144).$(FROM) oname=$(FC144).cpp
+	$(CC) $(CFLAGS) $(FC144).cpp $(INCLALL)
+
+$(FC145).$(TO):$(FC145).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC145).$(FROM) oname=$(FC145).cpp
+	$(CC) $(CFLAGS) $(FC145).cpp $(INCLALL)
+
+$(FC146).$(TO):$(FC146).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC146).$(FROM) oname=$(FC146).cpp
+	$(CC) $(CFLAGS) $(FC146).cpp $(INCLALL)
+
+$(FC147).$(TO):$(FC147).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC147).$(FROM) oname=$(FC147).cpp
+	$(CC) $(CFLAGS) $(FC147).cpp $(INCLALL)
+
+$(FC148).$(TO):$(FC148).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC148).$(FROM) oname=$(FC148).cpp
+	$(CC) $(CFLAGS) $(FC148).cpp $(INCLALL)
+
+$(FC149).$(TO):$(FC149).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC149).$(FROM) oname=$(FC149).cpp
+	$(CC) $(CFLAGS) $(FC149).cpp $(INCLALL)
+
+$(FC150).$(TO):$(FC150).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC150).$(FROM) oname=$(FC150).cpp
+	$(CC) $(CFLAGS) $(FC150).cpp $(INCLALL)
+
+$(FC151).$(TO):$(FC151).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC151).$(FROM) oname=$(FC151).cpp
+	$(CC) $(CFLAGS) $(FC151).cpp $(INCLALL)
+
+$(FC152).$(TO):$(FC152).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC152).$(FROM) oname=$(FC152).cpp
+	$(CC) $(CFLAGS) $(FC152).cpp $(INCLALL)
+
+$(FC153).$(TO):$(FC153).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC153).$(FROM) oname=$(FC153).cpp
+	$(CC) $(CFLAGS) $(FC153).cpp $(INCLALL)
+
+$(FC154).$(TO):$(FC154).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC154).$(FROM) oname=$(FC154).cpp
+	$(CC) $(CFLAGS) $(FC154).cpp $(INCLALL)
+
+$(FC155).$(TO):$(FC155).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC155).$(FROM) oname=$(FC155).cpp
+	$(CC) $(CFLAGS) $(FC155).cpp $(INCLALL)
+
+$(FC156).$(TO):$(FC156).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC156).$(FROM) oname=$(FC156).cpp
+	$(CC) $(CFLAGS) $(FC156).cpp $(INCLALL)
+
+$(FC157).$(TO):$(FC157).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC157).$(FROM) oname=$(FC157).cpp
+	$(CC) $(CFLAGS) $(FC157).cpp $(INCLALL)
+
+$(FC158).$(TO):$(FC158).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC158).$(FROM) oname=$(FC158).cpp
+	$(CC) $(CFLAGS) $(FC158).cpp $(INCLALL)
+
+$(FC159).$(TO):$(FC159).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC159).$(FROM) oname=$(FC159).cpp
+	$(CC) $(CFLAGS) $(FC159).cpp $(INCLALL)
+
+$(FC160).$(TO):$(FC160).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC160).$(FROM) oname=$(FC160).cpp
+	$(CC) $(CFLAGS) $(FC160).cpp $(INCLALL)
+
+$(FC161).$(TO):$(FC161).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC161).$(FROM) oname=$(FC161).cpp
+	$(CC) $(CFLAGS) $(FC161).cpp $(INCLALL)
+
+$(FC162).$(TO):$(FC162).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC162).$(FROM) oname=$(FC162).cpp
+	$(CC) $(CFLAGS) $(FC162).cpp $(INCLALL)
+
+$(FC163).$(TO):$(FC163).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC163).$(FROM) oname=$(FC163).cpp
+	$(CC) $(CFLAGS) $(FC163).cpp $(INCLALL)
+
+$(FC164).$(TO):$(FC164).$(FROM)
+	$(PROC) $(CPP_PROFLAGS) iname=$(FC164).$(FROM) oname=$(FC164).cpp
+	$(CC) $(CFLAGS) $(FC164).cpp $(INCLALL)
+
+clean:
+	rm -f *.o
+

@@ -1,0 +1,1116 @@
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif 
+
+#include "procMain.h"
+#include "t2callserver.h"
+
+#include <sqlca.h>
+#include <sqlda.h>
+#include <sqlcpr.h>
+
+//------------------------------
+// 分别表示：
+// 		指出程序能否使用ORACLE通讯区
+// 		此项用于游标的自动释放
+EXEC ORACLE OPTION (ORACA = YES);
+EXEC ORACLE OPTION (RELEASE_CURSOR=YES); 
+
+//---------------------------------
+// EXEC SQL执行用变量定义
+EXEC SQL BEGIN DECLARE SECTION;
+	#define TABLE_NAME_LENGTH 32      /*表名最大长度*/ 
+	#define MAX_SQL_LENGTH 10001
+	sql_context ctx; 
+	char sDbNameList[21];
+	char sPubUserList[21];
+	char sCfgPasswdList[33];
+EXEC SQL END DECLARE SECTION;
+    
+SQLDA *bind_p;    /*定义选择项描述*/
+SQLDA *select_p;     /*定义输入项空间*/
+    
+#define MAX_ITEMS 100        /*定义最大查询字段数*/
+#define MAX_PARAM_ITEMS 30        /*定义最大参数个数*/
+#define MAX_VNAME_LEN 30  /*定义选择表项最大长度,即值域的最大*/
+#define MAX_INAME_LEN 30  /*定义指示器变量名字的最大长度,即参数名和字段名的最大长度*/
+    
+//-------------------------------
+// T2sdk输出函数
+IF2Packer * FUNCTION_CALL_MODE NewPacker(int iVersion);
+IF2UnPacker * FUNCTION_CALL_MODE NewUnPacker(void * lpBuffer, unsigned int iLen);
+
+//--------------------------------   
+int ConnectDB(char *sErr);  
+int alloc_descriptor(int size,int max_vname_len,int max_iname_len);   // 分配SQLDA空间
+void free_da();                                                       // 释放SQL空间
+int set_bind_v();
+int set_select_v(IF2Packer * packer);
+
+//-------------------------------------------------
+// 主键串分割，根据分隔符切割字符串，并去掉源字符串中被分割掉的部分
+bool KeySpilt(char* src, char* dst, char spilterChar);
+bool KeySpilt(char* src, char* dst, char spilterChar)
+{
+	int i=0;
+	int nStrlen = strlen(src);
+	if (nStrlen == 0)
+		return false;
+
+	for (i=nStrlen-1; i>0; --i)
+		if (spilterChar == src[i])
+			break;
+	i == 0 ? strcpy(dst, src) : strcpy(dst, src+i+1); 
+	src[i] = '\0';
+	return true;
+}   
+
+char* strtolower(char *str)
+{
+	int i = 0, nLen = strlen(str);
+  for(i=0; i<nLen; ++i)
+  {
+ 		str[i] = tolower(str[i]);
+  }
+  return str;
+}
+
+//-------------------------------------------
+// 获取要转换的表的列表
+int GetConvertTablesInfo(char ConvertTables[100][TABLE_NAME_LENGTH])
+{
+	// 变量定义, 和赋值
+	int nRecordCount = 0, i = 0;
+ 	EXEC SQL BEGIN DECLARE SECTION;
+		char sTableName[TABLE_NAME_LENGTH] = {0};
+ 	EXEC SQL END DECLARE SECTION;
+	
+	// 查询数据
+	EXEC SQL CONTEXT USE :ctx; 
+  EXEC SQL WHENEVER SQLERROR goto error;
+  EXEC SQL DECLARE cursor CURSOR FOR select vc_table_name_o32
+                         from (select distinct a.vc_table_name_o32, a.l_exec_level
+                               from tsynco4config a
+                               order by l_exec_level desc);
+	EXEC SQL OPEN cursor;
+	while(1)
+	{
+		EXEC SQL FETCH cursor INTO :sTableName;
+		if (1403 == sqlca.sqlcode)
+		{
+			break;
+		}
+		strcpy(ConvertTables[nRecordCount++], Trim(sTableName));
+	}
+	EXEC SQL CLOSE cursor;
+	//EXEC SQL COMMIT RELEASE;
+	EXEC ORACLE OPTION(RELEASE_CURSOR=YES);
+	EXEC SQL WHENEVER SQLERROR continue;
+  return nRecordCount;
+error:
+	GErrorNo = sqlca.sqlcode;
+	sprintf(GErrorMessage, "获取配置信息异常！错误信息[%s]",sqlca.sqlerrm.sqlerrmc); 
+	EXEC SQL WHENEVER SQLERROR continue;
+	return -1; 
+} 
+
+//-------------------------------------
+// 释放SQLDA空间    
+void free_da()
+{
+	int i,j;
+	for (i=0; i < MAX_ITEMS; i++)
+  {
+		if (select_p->V[i] != (char *)NULL)
+			free(select_p->V[i]);
+		free(select_p->I[i]);
+  }
+	for (j=0; j < MAX_ITEMS; j++)
+	{
+		if (bind_p->V[j] != (char *)NULL)
+			free(bind_p->V[j]);
+		free(bind_p->I[j]);
+	}
+	sqlclu(bind_p);
+  sqlclu(select_p);
+}
+    
+//---------------------------------------
+// 给SQLDA符分配空间
+int alloc_descriptor(int size,int max_vname_len,int max_iname_len)
+{
+	int i;
+	
+	if((bind_p=sqlaldt(0,size,max_vname_len,max_iname_len))==(SQLDA*)0)
+	{
+		GErrorNo = -120;
+		strcpy(GErrorMessage, "SQLDA分配空间失败 :can't allocate memory for bind_p!"); 
+		return GErrorNo;
+	}
+	
+	if((select_p=sqlaldt(0,size,max_vname_len,max_iname_len))==(SQLDA*)0)
+	{
+		GErrorNo = -120;
+		strcpy(GErrorMessage, "SQLDA分配空间失败 :can't allocate memory for select_p!"); 
+		return GErrorNo;
+	}
+	
+	select_p->N = MAX_ITEMS;
+	for(i=0;i<MAX_ITEMS;i++)
+	{
+		bind_p->I[i] = (short*)malloc(sizeof(short));
+		select_p->I[i] = (short*)malloc(sizeof(short));
+		bind_p->V[i] = (char*)malloc(1);
+		select_p->V[i] = (char*)malloc(1);
+	}
+	return 0;
+}
+
+//---------------------------------
+//绑定变量的设置
+int set_bind_v()
+{
+	int i;
+	EXEC SQL WHENEVER SQLERROR goto error;
+	bind_p ->N = MAX_ITEMS;
+	EXEC SQL DESCRIBE BIND VARIABLES FOR S INTO bind_p;
+	if(bind_p->F<0)
+	{
+		GErrorNo = -122;
+		strcpy(GErrorMessage, "Too Many bind varibles");
+		return GErrorNo;
+	}
+	bind_p->N = bind_p->F;
+	for(i=0;i<bind_p->N;i++)
+	{
+		bind_p->T[i] = 1;
+	}
+	EXEC SQL WHENEVER SQLERROR continue;
+	return 0; 
+error:
+	GErrorNo = -122;
+	strcpy(GErrorMessage, "set_bind_v 异常");
+	EXEC SQL WHENEVER SQLERROR continue;
+	return GErrorNo;
+}
+
+//---------------------------------
+// 选择列处理
+int set_select_v(IF2Packer * packer)
+{
+	int i = 0;
+	int null_ok = 0;
+	int precision =0;
+	int scale = 0;
+	char sFieldName[100] = {0};
+	EXEC SQL WHENEVER SQLERROR goto error;
+	EXEC SQL DESCRIBE SELECT LIST for S INTO select_p;
+	if(select_p->F<0)
+	{
+		GErrorNo = -122;
+		strcpy(GErrorMessage, "Too Many bind varibles");
+		return -122;
+	}
+	select_p->N = select_p->F;
+	//对格式作处理
+	for(i = 0;i<select_p->N;i++)
+	{
+		memset(sFieldName, 0, sizeof(sFieldName));
+		strncpy(sFieldName,  select_p->S[i], select_p->C[i]);
+		sqlnul((short unsigned int*)(&(select_p->T[i])), (short unsigned int*)(&(select_p->T[i])), &null_ok);//检查类型是否为空
+		switch (select_p->T[i])
+    {
+       case 1://VARCHAR2
+        {
+        	  packer->AddField(sFieldName, 'S');  //增加Field，类型是String
+        	  break;
+        }
+       case 2://NUMBER
+        {      
+            sqlprc((unsigned int*)(&(select_p->L[i])), &precision, &scale);
+            if (precision == 0) /*对于用户在sql中虚拟或运行出来的字段是得不到长度的，那就给个默认长度*/
+              precision = 40;
+            if ((precision > 9) || (scale > 0))
+            {  
+            	packer->AddField(sFieldName, 'D');  //增加Field，类型是double
+            }
+            else
+            {
+            	packer->AddField(sFieldName, 'I');  //增加Field，类型是Int
+            }
+            select_p->L[i] = precision + 2;
+            break;
+        }
+		   case 8://LONG
+		   	{
+				 		select_p->L[i] = 240;
+				 		packer->AddField(sFieldName, 'I');  //增加Field，类型是Int
+				 		break;
+				}		   
+		   case 11://ROWID
+		   	{
+				 		select_p->L[i] = 18;
+				 		packer->AddField(sFieldName, 'S');  //增加Field，类型是String
+				 		break;
+		    }
+		   case 12://DATE
+		   	{
+				 		select_p->L[i] = 9;
+				 		packer->AddField(sFieldName, 'I');  //增加Field，类型是Int
+				 		break;
+				}
+		   case 23://RAW
+		   	{
+						packer->AddField(sFieldName, 'S');  //增加Field，类型是String
+				 		break;
+				}
+                case 24://LONGRAW
+       	              {
+				 		select_p->L[i] = 240;
+			  		packer->AddField(sFieldName, 'S');  //增加Field，类型是String
+			     	break;
+			  }
+			 case 96: //CHAR
+			 	{
+			 		  packer->AddField(sFieldName, 'C');  //增加Field，类型是String
+			 	}
+		}
+		//hsWriteLog(1, "字段名[%s]字段类型[%d]\n", sFieldName, select_p->T[i]);
+		select_p->V[i] = (char *)realloc(select_p->V[i], select_p->L[i]+1);
+		select_p->V[i][select_p->L[i]] ='\0';//加上终止符
+		select_p->T[i] = 1;//把所有类型转换为字符型
+	}
+	EXEC SQL WHENEVER SQLERROR continue;
+	return 0;
+error:
+	GErrorNo = -123;
+	strcpy(GErrorMessage, "set select_v 异常");
+	EXEC SQL WHENEVER SQLERROR continue;
+	return GErrorNo;
+}
+
+/*服务初始化函数：建立数据库连接等。服务启动时调用*/
+int ServerInitial()
+{
+    char sErrMsg[1024]="";
+
+    if (hsGetConfig("QueryGate", "logfile", GLogFile) != 1)
+    {
+        strcpy(GLogFile,"svr_query.log");
+        fprintf(stderr, "Cannot get logfile\n");
+    }
+    if (hsGetConfig("common", "EncryptKey", GEncryptKey) != 1)
+    {
+        strcpy(GEncryptKey,"HaNdSoMeFuNd");
+    }
+    if (ConnectDB(sErrMsg)<0) 
+    {
+        hsWriteLog(0,"数据转换服务数据库连接失败！信息：%s", sErrMsg);
+        return -1; 
+    }
+		
+    return 0;
+}
+
+//-------------------------------------
+// 判断是否需要重新获取日志级别
+int IsNeedDeal(struct timeb *stLastTime,const int iInterval)
+{
+    int iRet = 0;
+    if(DiffTime(*stLastTime) > iInterval )  
+  {
+      iRet = 1;
+      ftime(stLastTime);    
+  }
+    return iRet;
+}
+
+/*Service初始化函数，用于赋值一些全局变量。每个Service的入口都要调用
+传入参数：
+iInitDate:是否要初始化日期全局变量
+*/
+/*****************************ServiceInitial********************************
+*20090417 modify by fanwj
+1、取当前日期的函数GetDateTime，不需要每次服务调用都取一次。5秒取一次
+2、从日志文件中取日志级别，10秒取一次
+3、检查日志文件大小并处理，10秒检查处理一次
+4\
+******************************ServiceInitial********************************/
+int ServiceInitial(void)
+{
+   // int i;
+    char Str[100];
+    static struct timeb stLastTime;
+		if(IsNeedDeal(&stLastTime,10) == 1) /*每隔10秒处理一次*/
+		{
+			if (hsGetConfig("LogLevel","o4data_convert",Str)!=1)
+		 	{
+		 		if (hsGetConfig("common", "LogLevel", Str) != 1)
+				{
+					GLogLevel=0;
+				}
+				else
+			 	{
+          sscanf(Str,"%d",&GLogLevel);
+			 	}
+			}		
+      else
+		 	{
+        sscanf(Str,"%d",&GLogLevel);
+		  }
+      //i=Changefilename(GLogFile);
+      Changefilename(GLogFile);
+		}
+		hsWriteLog(1, "获取当前日志级别%d", GLogLevel);
+    return 0;
+}
+
+/***************************************************************************
+函数名称:ConnectDB
+函数功能:连接数据库。连接参数从配置文件中读取
+输入参数:
+输出参数:
+返 回 值:0:连接成功；-1:连接失败
+***************************************************************************/
+int ConnectDB(char *sErr)
+{
+    //-------------------------
+    //变量定义	
+    EXEC SQL BEGIN DECLARE SECTION;
+    	char sdbName[100] = "";
+    	char sPubUser[20] = "";
+    	char sUser[20] = "";
+    	char sPubPasswd[33]= "";
+    	char sPasswd[33] = "";
+    	char sCfgPasswd[33]= "";
+    	char sConnectString[100] = "";
+    EXEC SQL END DECLARE SECTION;
+    
+    EXEC SQL CONTEXT ALLOCATE :ctx;
+    EXEC SQL CONTEXT USE :ctx; 
+    EXEC SQL WHENEVER SQLERROR continue;
+    
+    char DBServerSec[21]="DBServer";
+    char DBUserSec[21]="DBUser";
+    char DBPasswdSec[21]="DBPasswd";
+    
+    //---------------------------------
+		// 从配置文件加载当前库的用户密码
+    if (hsGetConfig("common", DBServerSec, sdbName) != 1)
+        sdbName[0] = '\0';    
+    if (hsGetConfig("common", DBUserSec, sPubUser) !=1)
+        sPubUser[0] = '\0';     
+    if (hsGetConfig("common", DBPasswdSec, sCfgPasswd) !=1 )
+        sCfgPasswd[0] = '\0';
+        
+    hsWriteLog(0, "DBName[%s],UserID[%s],PassWd[%s]",sdbName,sPubUser,sCfgPasswd);
+		
+		//-------------------------------------
+		// 如果文件加载失败，则默认hsfund/888888888
+    if (sPubUser[0] == '\0')   
+        strcpy(sPubUser, "hsfund");
+    if (sCfgPasswd[0] == '\0') 
+        strcpy(sCfgPasswd, "88888888");
+        
+    //-------------------------------------
+    // 如果是密文的，解密后再使用，如果是明文的，加密后再保存
+    if(strlen(sCfgPasswd)==32)
+    {
+        hsDecryptExNew(GEncryptKey,sCfgPasswd, sPubPasswd);
+    }
+    else
+    {
+        strcpy(sPubPasswd,sCfgPasswd);
+        hsEncryptExNew(GEncryptKey,sPubPasswd, sCfgPasswd);
+        write_profile_string("common", DBPasswdSec, sCfgPasswd, GConfigFile);
+    }
+    
+    //-------------------------------------
+		// 拼接连接串,并以小权限连接
+    if ('\0' == sdbName[0])
+        sprintf(sConnectString,"%s/%s",sPubUser,sPubPasswd);
+    else
+        sprintf(sConnectString,"%s/%s@%s",sPubUser,sPubPasswd,sdbName);
+    EXEC SQL connect :sConnectString;
+    if (sqlca.sqlcode != 0) 
+    {
+        if (sqlca.sqlcode == 28002) //如果是密码过期提示，那么只记录日志
+        {
+            hsWriteLog(0,"使用user=[%s]登录数据库[%s]:%.*s",sPubUser,sdbName,sqlca.sqlerrm.sqlerrml,sqlca.sqlerrm.sqlerrmc);
+        }
+        else
+        {
+            hsWriteLog(0,"使用user=[%s]登录数据库[%s]连接失败:%.*s",sPubUser,sdbName,sqlca.sqlerrm.sqlerrml,sqlca.sqlerrm.sqlerrmc);
+            return -1;
+        }
+    }
+    
+    //------------------------------------
+    // 获取大权限用户，并以大权限连接
+    EXEC SQL select vc_user_name, vc_password into :sUser,:sPasswd from HSUSERPASSWORD where l_user_type='5';
+    Trim(sUser);
+    Trim(sPasswd);
+    if (strcmp(sPubUser,sUser)!=0)
+    {
+        strcpy(sPubUser,sUser);
+        hsDecryptExNew(GEncryptKey,sPasswd, sPubPasswd);
+        if (sdbName[0]=='\0')
+            sprintf(sConnectString,"%s/%s",sPubUser,sPubPasswd);
+        else
+            sprintf(sConnectString,"%s/%s@%s",sPubUser,sPubPasswd,sdbName);
+        EXEC SQL connect :sConnectString;
+        if (sqlca.sqlcode != 0) 
+        {
+            if (sqlca.sqlcode == 28002) //如果是密码过期提示，那么只记录日志
+            {
+                hsWriteLog(0,"使用user=[%s]登录数据库[%s]:%.*s",sPubUser,sdbName,sqlca.sqlerrm.sqlerrml,sqlca.sqlerrm.sqlerrmc);
+            }
+            else
+            {
+                if(sqlca.sqlcode == -1017)
+                    hsWriteLog(0,"使用user=[%s],password=[%s]登录数据库[%s]连接失败:%.*s",sPubUser,sPubPasswd,sdbName,sqlca.sqlerrm.sqlerrml,sqlca.sqlerrm.sqlerrmc);
+                else
+                    hsWriteLog(0,"数据库再次连接失败:%.*s",sqlca.sqlerrm.sqlerrml,sqlca.sqlerrm.sqlerrmc);
+                return -1;
+            }
+        }
+    } 
+    oraca.oradbgf  = 1;             // enable debug operations
+    oraca.oracchf  = 1;             // gather cursor cache statistics
+    oraca.orastxtf = 3;             // always save the SQL statement 
+    EXEC SQL WHENEVER SQLERROR goto error;
+    return 0;    
+}
+
+//-----------------------------------------------
+// 重连数据库.
+/*int ReLinkDb(int iErrorCode, char *sErrMsg)
+{
+    int i=0;
+    if(iErrorCode==-28 ||iErrorCode==-12571 ||iErrorCode == -1012 || iErrorCode == -3113 ||iErrorCode == -3114  || iErrorCode == -28500 )
+    {
+        hsWriteLog(0,"通讯错误，错误代码, 重新连接DB\n"); 
+        if(ConnectDB(sDbNameList[iCurrentDbIndex],sPubUserList[iCurrentDbIndex],sCfgPasswdList[iCurrentDbIndex]))
+        {
+            hsWriteLog(0," 重试后仍然无法连接到数据库，请检查数据库连接配置、网络连接或数据库状态");
+            sprintf(sErrMsg, "%s\n", sqlca.sqlerrm.sqlerrmc);
+            return -1;
+        }
+        else
+        {
+            hsWriteLog(0,"重新连接数据库已成功!");
+            return 0;
+        }
+    }
+    else 
+    {
+        return -2;
+    }
+}*/   
+
+#ifdef __cplusplus
+}
+#endif
+
+//--------------------------------------
+// 构造函数
+CDataConvert::CDataConvert(const char* pTableName, const char * pRefreshType, IF2UnPacker* unPacker)
+{
+	strcpy(m_szTableName, pTableName);
+	strtolower(m_szTableName);
+	
+	switch(pRefreshType[0])
+	{
+	case '0': {
+			m_refreshType = REFRESH_ALL;
+			break;
+		}
+	case '1': {
+			m_refreshType = REFRESH_ADD;
+			break;
+		}
+	case '2': {
+			m_refreshType = REFRESH_DELETE;
+			break;
+		}
+	case '3': {
+			m_refreshType = REFRESH_UPDATE;
+			break;
+		}
+	default:
+		m_refreshType = REFRESH_UNDEFINE;
+	};
+	m_lpDataUnpacker = unPacker;
+	m_lpResultSet = NULL;
+	m_lpSvrInParam = NULL;
+	
+	//---------------
+	// 其他成员变量初始化
+	m_nInitDate = -1;								// 初始化日期
+	memset(m_szO4TableName, 0, sizeof(m_szO4TableName));
+	memset(m_szPrimaryStr, 0, sizeof(m_szPrimaryStr));
+	memset(m_szConvertSQL, 0, sizeof(m_szConvertSQL));
+	memset(m_szPreSQL, 0, sizeof(m_szPreSQL));
+	memset(m_nRcFuncNo, 0, sizeof(m_nRcFuncNo));
+	memset(m_nRjFuncNo, 0, sizeof(m_nRjFuncNo));
+	memset(m_szFilePath, 0, sizeof(m_szFilePath));
+	memset(m_szExportFileName, 0, sizeof(m_szExportFileName));
+	memset(m_bSaveToDB, 0, sizeof(m_bSaveToDB));
+	m_nMapCount = 0;
+	if (NULL != m_lpDataUnpacker)
+          hsWriteLog(0, "刷新表[%s]刷新模式[%d]表行数[%d]字段数[%d]", pTableName, m_refreshType,m_lpDataUnpacker->GetRowCount(), m_lpDataUnpacker->GetColCount());
+        else
+          hsWriteLog(0, "刷新表[%s]刷新模式[%d]", pTableName, m_refreshType); 
+}
+
+CDataConvert::CDataConvert(const char* pTableName, int nInitDate)
+{
+	strcpy(m_szTableName, pTableName);
+	m_nInitDate = nInitDate;
+	m_refreshType = REFRESH_RC;
+	m_lpDataUnpacker = NULL;
+	m_lpResultSet = NULL;
+	m_lpSvrInParam = NULL;
+	
+	//--------------------------
+	// 其他成员变量初始化
+	memset(m_szO4TableName, 0, sizeof(m_szO4TableName));
+	memset(m_szPrimaryStr, 0, sizeof(m_szPrimaryStr));
+	memset(m_szConvertSQL, 0, sizeof(m_szConvertSQL));
+	memset(m_szPreSQL, 0, sizeof(m_szPreSQL));
+	memset(m_nRcFuncNo, 0, sizeof(m_nRcFuncNo));
+	memset(m_nRjFuncNo, 0, sizeof(m_nRjFuncNo));
+	memset(m_szFilePath, 0, sizeof(m_szFilePath));
+	memset(m_szExportFileName, 0, sizeof(m_szExportFileName));
+	memset(m_bSaveToDB, 0, sizeof(m_bSaveToDB));
+	m_nMapCount = 0; 
+	hsWriteLog(5, "刷新表[%s]刷新模式[%d]", pTableName, m_refreshType);
+}
+
+//-------------------------------------
+// 析构函数
+CDataConvert::~CDataConvert()
+{
+	try
+	{
+		// 释放打包器
+		if (m_lpResultSet)
+		{
+      m_lpResultSet->FreeMem(m_lpResultSet->GetPackBuf());
+			m_lpResultSet->Release();	
+			m_lpResultSet = NULL;
+			
+		}
+		
+		if (m_lpSvrInParam)
+		{
+      m_lpSvrInParam->FreeMem(m_lpSvrInParam->GetPackBuf());
+			m_lpSvrInParam->Release();	
+			m_lpSvrInParam = NULL; 
+		}
+	}
+	catch(...)
+	{
+		hsWriteLog(0, "CDataConvert类释放异常.");
+	}
+}
+
+//-------------------------
+// 打包日初服务入参
+void CDataConvert::PackRcInParam(int nIndex)
+{
+	if (!m_lpResultSet)
+		return;
+		
+	int nDataLen = m_lpResultSet->GetPackLen();
+	void* lpData = m_lpResultSet->GetPackBuf();
+	
+	m_lpSvrInParam = NewPacker(2);
+	m_lpSvrInParam->BeginPack();
+	m_lpSvrInParam->AddField("table_name");
+	m_lpSvrInParam->AddField("init_date", 'I');
+	m_lpSvrInParam->AddField("file_path");
+	m_lpSvrInParam->AddField("export_file_name");
+	m_lpSvrInParam->AddField("savetodb_flag");
+	m_lpSvrInParam->AddField("savetocsv_flag");
+	m_lpSvrInParam->AddField("o3DataSet", 'R', nDataLen);
+	m_lpSvrInParam->AddStr(m_szO4TableName[nIndex]);
+	m_lpSvrInParam->AddInt(m_nInitDate);
+	m_lpSvrInParam->AddStr(m_szFilePath[nIndex]);
+	m_lpSvrInParam->AddStr(m_szExportFileName[nIndex]);
+	m_lpSvrInParam->AddChar(m_bSaveToDB[nIndex]);
+	m_lpSvrInParam->AddChar('1');
+	m_lpSvrInParam->AddRaw(lpData, nDataLen);	
+	m_lpSvrInParam->EndPack();
+	
+	try
+	{	
+    m_lpResultSet->FreeMem(m_lpResultSet->GetPackBuf());
+		m_lpResultSet->Release();
+		m_lpResultSet = NULL;
+	}
+	catch(...) 	{ }
+}
+
+void CDataConvert::PackRjInParam(int nIndex)
+{
+	if (!m_lpResultSet)
+		return;
+	
+	int nDataLen = m_lpResultSet->GetPackLen();
+	void* lpData = m_lpResultSet->GetPackBuf();
+	
+	m_lpSvrInParam = NewPacker(2);
+	m_lpSvrInParam->BeginPack();
+	m_lpSvrInParam->AddField("update_type", 'I');
+	m_lpSvrInParam->AddField("table_name");
+	m_lpSvrInParam->AddField("key_field_list");
+	m_lpSvrInParam->AddField("savetodb_flag");
+	m_lpSvrInParam->AddField("o3DataSet", 'R', nDataLen);
+	m_lpSvrInParam->AddInt((int)m_refreshType);
+	m_lpSvrInParam->AddStr(m_szO4TableName[nIndex]);
+	m_lpSvrInParam->AddStr(m_szPrimaryStr[nIndex]);
+	m_lpSvrInParam->AddChar(m_bSaveToDB[nIndex]);
+	m_lpSvrInParam->AddRaw(lpData, nDataLen);	
+	m_lpSvrInParam->EndPack();
+	
+	try
+	{
+    m_lpResultSet->FreeMem(m_lpResultSet->GetPackBuf());
+		m_lpResultSet->Release();
+		m_lpResultSet = NULL;
+	}
+	catch(...) 	{ }
+}
+
+//-----------------------------------
+// 打印获取到的配置信息
+void CDataConvert::PrintConvertConfig()
+{
+	if (GLogLevel < 5)
+		return;
+	
+	int i = 0;
+	hsWriteLog(0, "记录数[%d]", m_nMapCount);
+	for (i=0; i< m_nMapCount; ++i)
+	{
+		hsWriteLog(0, "============================对应关系%d=================================", i+1);
+		hsWriteLog(0, "O4表名[%s] 主键串[%s] ", m_szO4TableName[i], m_szPrimaryStr[i]);
+		hsWriteLog(0, "日初功能号[%d] 日间功能号[%d]", m_nRcFuncNo[i], m_nRjFuncNo[i]);
+		hsWriteLog(0, "文件路径[%s] 导出文件名[%s] 是否记录到数据库[%c]", m_szFilePath[i], m_szExportFileName[i], m_bSaveToDB[i]); 
+		hsWriteLog(0, "预处理SQL[%s]转换SQL[%s]", m_szPreSQL[i], m_szConvertSQL[i]);
+	}
+}
+
+void CDataConvert::Convert()
+{
+	bool bRet = false;
+	int i=0, j=0, nColCount = 0;
+	const char *lpSQL = NULL;
+	char errInfo[10240];
+	IF2Packer * tmpPack = NULL;
+	IF2UnPacker * tmpUnPack= NULL;
+	
+	// 获取配置信息
+	bRet = GetConvertConfig();
+	if( !bRet )
+	{
+		sprintf(errInfo, "获取表[%s]配置信息失败[%d:%s]", m_szTableName, GErrorNo, GErrorMessage);
+		strcpy(GErrorMessage, errInfo);
+		return;
+	}
+	PrintConvertConfig();   //打印配置信息
+	
+	// 依次执行数据转换
+	for(i=0; i<m_nMapCount; ++i)
+	{
+		// 如果是日间刷新,那么只需要执行基础表的更新即可， 并且需要执行预处理的sql
+		if(m_refreshType != REFRESH_RC)  
+		{
+			if (! (('j' == m_szO4TableName[i][0]) && ('c' == m_szO4TableName[i][1]) 
+				   && ('_' == m_szO4TableName[i][2]) && ('t' == m_szO4TableName[i][3])))
+				continue;
+				
+			if (strlen(m_szPreSQL[i]) > 0)
+			{
+				hsWriteLog(5, "执行预处理SQL:%s", m_szPreSQL[i]);
+				if(!ExecuteSQL(m_szPreSQL[i]))
+					break;
+			}
+		}
+		
+		// 获取执行SQL
+		lpSQL = GetExecSQL(i);		 
+		if (NULL == lpSQL)
+		{
+			GErrorNo = -131;
+			sprintf(GErrorMessage, "获取表[%s]执行SQL失败！", m_szTableName);
+			break;
+		}
+		hsWriteLog(5, "执行SQL:%s", lpSQL);
+		
+		
+		//-----------------------
+		// 执行SQL
+		if(!SelectSQL(lpSQL))
+		{
+			sprintf(errInfo, "执行SQL获取数据失败:目标表名[%s]错误信息[%s]",m_szO4TableName[i], GErrorMessage);
+			strcpy(GErrorMessage, errInfo);
+			break;
+		}
+		
+		//tassetday表,获取现货可用金额
+		if((strcmp(m_szO4TableName[i], "uft_cassetfactor") == 0) || (strcmp(m_szO4TableName[i], "uft_cunitstockfactor") == 0))
+		{
+			tmpPack = NewPacker(2);
+			// 获取可用放入临时结果集，并释放原结果集
+			if(strcmp(m_szO4TableName[i], "uft_cassetfactor") == 0)
+        get_enable_balance(m_lpResultSet->UnPack(), tmpPack);
+      else if (strcmp(m_szO4TableName[i], "uft_cunitstockfactor") == 0)
+        get_stock_enable(m_lpResultSet->UnPack(), tmpPack);
+			
+      m_lpResultSet->FreeMem(m_lpResultSet->GetPackBuf());
+			m_lpResultSet->Release();
+			
+			//重新打包回m_lpResultSet
+			tmpUnPack = tmpPack->UnPack();
+			nColCount = tmpUnPack->GetColCount();
+			m_lpResultSet = NewPacker(2);
+			m_lpResultSet->BeginPack();
+			
+			// 打包头
+			for (j=0; j<nColCount; ++j)
+				m_lpResultSet->AddField(tmpUnPack->GetColName(j), tmpUnPack->GetColType(j));
+			//打包内容
+			while (!tmpUnPack->IsEOF())
+			{
+				for (j=0; j<nColCount; ++j)
+					m_lpResultSet->AddStr(tmpUnPack->GetStrByIndex(j));
+				tmpUnPack->Next();
+			}
+			m_lpResultSet->EndPack();
+			
+			//释放中间结果集
+			tmpPack->FreeMem(tmpUnPack->GetPackBuf());
+			tmpPack->Release();
+		}
+		
+		// 打包服务入参
+		PackSvrInParam(i);
+		if (GLogLevel >= 5)
+		{
+			PrintUnpacker(m_lpSvrInParam->UnPack());
+		}
+    
+		// 调用O4服务
+		SyncData(i); 
+		if (GErrorNo !=0 )
+		{
+			sprintf(errInfo, "刷新同步失败:源表名[%s]目标表名[%s]错误号[%d]错误信息[%s]", m_szTableName, m_szO4TableName[i], GErrorNo, GErrorMessage);
+			strcpy(GErrorMessage, errInfo);
+			break;
+		}
+		
+		// 打印转换结果
+		hsWriteLog(0, "数据同步成功:源表名[%s]目标表名[%s]", m_szTableName, m_szO4TableName[i]);
+	}
+}	
+
+//--------------------------------
+// 调用O4服务，同步数据
+bool CDataConvert::SyncData(int nIndex)
+{
+	if (!m_lpSvrInParam)
+		return false;
+		
+	IF2UnPacker* unPacker = NULL;
+	switch(m_refreshType)
+	{
+	case REFRESH_RC: {
+			unPacker = CallSvr(m_nRcFuncNo[nIndex], m_lpSvrInParam);
+			break;
+		}
+	case REFRESH_ALL:
+	case REFRESH_ADD:
+	case REFRESH_UPDATE:
+	case REFRESH_DELETE:{
+			unPacker = CallSvr(m_nRjFuncNo[nIndex], m_lpSvrInParam);
+			break;
+		}
+	default:
+		return false;
+	}
+	
+	try
+	{
+		m_lpSvrInParam->FreeMem(m_lpSvrInParam->GetPackBuf());
+		m_lpSvrInParam->Release();
+		m_lpSvrInParam = NULL;
+	}catch(...) {}
+	
+	//-------------------------------
+	// 解析应答包
+	if (unPacker)
+	{
+		//PrintUnpacker(unPacker);
+		unPacker->Release();
+	}
+	return true; 
+}
+
+//-----------------------------------
+// 打包服务入参
+void CDataConvert::PackSvrInParam(int nIndex)
+{
+	switch(m_refreshType)
+	{
+		case REFRESH_RC: 
+		{
+			PackRcInParam(nIndex);
+			break;
+		}
+		case REFRESH_ALL:
+		case REFRESH_ADD:
+		case REFRESH_UPDATE:
+		case REFRESH_DELETE:{
+			PackRjInParam(nIndex);
+			break;
+		}
+		default:
+			m_lpSvrInParam = NULL;
+	}
+}
+
+//----------------------------------------
+// 执行SQL
+bool ExecuteSQL(const char* lpSQL)
+{
+	EXEC SQL BEGIN DECLARE SECTION; 
+    char szSQL[4000] = "";
+  EXEC SQL END DECLARE SECTION;
+  
+  EXEC SQL WHENEVER SQLERROR goto error;
+  
+  strcpy(szSQL, lpSQL);
+	EXEC SQL PREPARE sqlproc FROM :szSQL;
+	EXEC SQL EXECUTE sqlproc;
+
+  EXEC SQL COMMIT WORK; 
+  return true;
+error:
+  GErrorNo = sqlca.sqlcode;
+  sprintf(GErrorMessage, "执行[%s]异常！错误信息[%s]", lpSQL, sqlca.sqlerrm.sqlerrmc);
+  EXEC SQL ROLLBACK;
+  return false;  
+}   
+    
+//----------------------------------------------
+// 执行select语句，结果放在m_lpResultSet中
+bool CDataConvert::SelectSQL(const char* lpSQL)
+{
+	int i =0;
+	
+	//新建打包对象
+	m_lpResultSet = NewPacker(2);
+	if (NULL == m_lpResultSet)
+		return false;
+		
+	//给SQLDA分配空间
+	if(alloc_descriptor(MAX_ITEMS,MAX_VNAME_LEN,MAX_INAME_LEN) != 0)
+		return false;	
+	
+	//变量定义区：
+ 	EXEC SQL BEGIN DECLARE SECTION;
+    char sSQL[MAX_SQL_LENGTH] = "";
+ 	EXEC SQL END DECLARE SECTION;
+ 	EXEC SQL CONTEXT USE :ctx; 
+ 		
+	if(NULL == lpSQL)
+		return false;
+		
+	strcpy(sSQL,lpSQL);
+		
+	//---------------------------------------
+	// 执行SQL
+	EXEC SQL PREPARE S from :sSQL;
+	if (set_bind_v() != 0)
+		return false;
+	
+	EXEC SQL WHENEVER SQLERROR goto error;
+		
+  EXEC SQL DECLARE C1 CURSOR FOR S; 
+  EXEC SQL OPEN C1 USING DESCRIPTOR bind_p;
+  EXEC SQL DESCRIBE SELECT LIST for S INTO select_p;
+
+	//-------------------------------------
+	//打包内容
+	m_lpResultSet->BeginPack();
+  set_select_v(m_lpResultSet);       // 打包包头
+	while (true)                       // 打包包体 
+  {
+  	EXEC SQL WHENEVER NOT FOUND DO break;
+		EXEC SQL FETCH C1 USING DESCRIPTOR select_p;
+		for(i=0;i<select_p->F;i++)
+		{
+			m_lpResultSet->AddStr(Trim(select_p->V[i]));
+		}
+	}
+	m_lpResultSet->EndPack();
+  //释放资源
+  EXEC SQL CLOSE C1;
+	EXEC SQL COMMIT WORK; 
+	EXEC SQL WHENEVER NOT FOUND CONTINUE;
+	EXEC SQL WHENEVER SQLERROR continue;
+	// 释放SQLDA内存
+	free_da();
+  return true; 
+error:
+	EXEC SQL ROLLBACK;
+  GErrorNo=-121;
+  sprintf(GErrorMessage, "执行SQL获取数据失败！SQL[%s]", lpSQL); 
+  EXEC SQL WHENEVER SQLERROR continue;
+	return false;
+}
+    
+//--------------------------
+// 获取数据转换需要的配置信息
+// 出参:  当获取异常时返回错误号(小于0)，正常运行返回>=0，表示获取到的记录数 
+bool CDataConvert::GetConvertConfig()
+{
+	// 变量定义, 和赋值
+	int i = 0;
+	m_nMapCount = 0;
+	EXEC SQL BEGIN DECLARE SECTION; 
+    typedef struct _TConvertSQL{
+	  	char szTableName[32];
+	  	char szSQL1[4000];
+	  	char szSQL2[4000];
+	  	int nRcFuncNo;
+	  	int nRjFuncNo;
+	  	char szPrimarykeys[256];
+	  	char szFilePath[512];
+	  	char szPreSQL[256];
+	  	char szExportFileName[512];
+	  	char bSaveToDB;
+	  }TConvertSQL;
+	  TConvertSQL ConvertA;
+	  char O3TableName[TABLE_NAME_LENGTH] = {0};
+  EXEC SQL END DECLARE SECTION;
+	
+	strcpy(O3TableName, m_szTableName);
+  memset(&ConvertA, 0, sizeof(ConvertA));
+	
+	// 查询数据
+	EXEC SQL CONTEXT USE :ctx; 
+  EXEC SQL WHENEVER SQLERROR goto error;
+  EXEC SQL DECLARE mycursor CURSOR FOR select trim(a.vc_table_name_o4), 
+                                              nvl(a.vc_sql1, ' ') vc_sql1,
+                                              nvl(a.vc_sql2, ' ') vc_sql2,
+                        											nvl(a.l_func_id_rc, 0), 
+                        											nvl(a.l_func_id_rj, 0),  
+                        											nvl(a.vc_primary_keys, ' '),
+                        										  nvl(a.vc_file_path, ' '),
+                        											nvl(a.vc_pre_sql, ' '),
+                        											nvl(a.vc_export_file_name, ' '),
+                        											trim(a.c_savetodb_flag)
+					                               from tsynco4config a
+					                               where lower(a.vc_table_name_o32) = lower(:O3TableName);
+	EXEC SQL OPEN mycursor;
+	while(1) {
+		EXEC SQL FETCH mycursor INTO :ConvertA;
+		if (1403 == sqlca.sqlcode)
+		{
+			break;
+		}
+		if (m_nMapCount == MAX_TABLE_MAP)
+		{
+			GErrorNo = -107;
+			sprintf(GErrorMessage, "程序最多支持一张O4表对应%d张表!记录数过多！", MAX_TABLE_MAP);	
+			return false;
+		}
+		strcpy(m_szO4TableName[m_nMapCount], Trim(ConvertA.szTableName));
+		//hsWriteLog(0, "%d %s %s", m_nMapCount, ConvertA.szTableName, m_szO4TableName[m_nMapCount]);
+		strcpy(m_szPrimaryStr[m_nMapCount], Trim(ConvertA.szPrimarykeys));
+		//hsWriteLog(0, "%d %s %s", m_nMapCount, ConvertA.szPrimarykeys, m_szPrimaryStr[m_nMapCount]);
+		strcpy(m_szConvertSQL[m_nMapCount], Trim(ConvertA.szSQL1));
+		//hsWriteLog(0, "%d %s %s", m_nMapCount, ConvertA.szSQL1, m_szConvertSQL[m_nMapCount]);
+		strcat(m_szConvertSQL[m_nMapCount], Trim(ConvertA.szSQL2));
+		//hsWriteLog(0, "%d %s %s",m_nMapCount, ConvertA.szSQL2, m_szConvertSQL[m_nMapCount]);
+		m_nRcFuncNo[m_nMapCount] = ConvertA.nRcFuncNo;
+		//hsWriteLog(0, "%d %d %d",m_nMapCount, ConvertA.nRcFuncNo, m_nRcFuncNo[m_nMapCount]);
+		m_nRjFuncNo[m_nMapCount] = ConvertA.nRjFuncNo;
+		//hsWriteLog(0, "%d %d %d",m_nMapCount, ConvertA.nRjFuncNo, m_nRjFuncNo[m_nMapCount]);
+		strcpy(m_szFilePath[m_nMapCount], Trim(ConvertA.szFilePath));
+		//hsWriteLog(0, "%d %s %s",m_nMapCount, ConvertA.szFilePath, m_szFilePath[m_nMapCount]);
+		strcpy(m_szPreSQL[m_nMapCount], Trim(ConvertA.szPreSQL));
+		strcpy(m_szExportFileName[m_nMapCount], Trim(ConvertA.szExportFileName));
+		//hsWriteLog(0, "%d %s %s",m_nMapCount, ConvertA.szExportFileName, m_szExportFileName[m_nMapCount]);
+		m_bSaveToDB[m_nMapCount] = ConvertA.bSaveToDB;
+		//hsWriteLog(0, "%d %c %c",m_nMapCount, ConvertA.bSaveToDB, m_bSaveToDB[m_nMapCount]);
+		m_nMapCount ++;
+	}
+	EXEC SQL CLOSE mycursor;
+	EXEC ORACLE OPTION(RELEASE_CURSOR=YES);
+	
+	if (0== m_nMapCount)
+	{
+		GErrorNo = -101;
+		sprintf(GErrorMessage, "未找到表[%s]相关的配置信息!", m_szTableName);	
+		return false;
+	}
+	//hsWriteLog(0, "表[%s]获取记录数[%d]", m_szTableName, m_nMapCount);
+	EXEC SQL WHENEVER SQLERROR continue;
+  return true;
+error:
+	GErrorNo = sqlca.sqlcode;
+	sprintf(GErrorMessage, "获取配置信息异常！错误信息[%s]",sqlca.sqlerrm.sqlerrmc); 
+	EXEC SQL WHENEVER SQLERROR continue;
+	return false;
+}    
+    
+//----------------------------------------
+// 获取最终执行SQL
+char* CDataConvert::GetExecSQL(int nIndex)
+{
+	int nCount = 0, i=0;
+	char szSQL[10000] = {0};
+	char tmpStr[200] = {0};
+	char * lpStr = NULL;
+	const char * lpFieldName = NULL;
+	const char * lpFieldValue = NULL;
+	if ((REFRESH_ALL == m_refreshType) || (REFRESH_RC == m_refreshType))
+	{
+		return m_szConvertSQL[nIndex];			// 如果是全量或者日初，则直接用配置的SQL  
+	}
+	else
+	{
+		if (!m_lpDataUnpacker)
+			return NULL;
+		// 将修改的数据集变为SQL语句
+		nCount = m_lpDataUnpacker->GetColCount();
+  	strcpy(szSQL, " (select ");
+  	for (i=0; i<nCount; ++i)
+  	{
+  		lpFieldName = m_lpDataUnpacker->GetColName(i);
+  		//cFieldType = lpUnPacker->GetColType(i);
+  		lpFieldValue = m_lpDataUnpacker->GetStrByIndex(i);
+  		sprintf(tmpStr, " '%s' as %s,", lpFieldValue, lpFieldName);
+//  		hsWriteLog(0, "FieldName[%s]FieldValue[%s]TmpStr[%s]", lpFieldName, lpFieldValue, tmpStr);
+  		strcat(szSQL, tmpStr);
+ 	  }
+    szSQL[strlen(szSQL)-1] = '\0';
+    strcat(szSQL, " from dual )");
+		
+		// -----------------------------
+//		hsWriteLog(0, "Src[%s]Mode[%s]Replace[%s]", m_szConvertSQL[nIndex], m_szTableName, szSQL);
+		lpStr = StrReplace(m_szConvertSQL[nIndex], m_szTableName, szSQL);
+//  	hsWriteLog(0, "长度[%d]最终SQL%s", strlen(lpStr),lpStr);
+  	strcpy(m_szConvertSQL[nIndex], lpStr);
+  	return m_szConvertSQL[nIndex];
+	}
+}
+
+
+

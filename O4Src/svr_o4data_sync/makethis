@@ -1,0 +1,39 @@
+SERVERNAME="svr_o4data_sync"
+MAKEFILENAME_TUX="makefile"
+MAKEFILENAME_FBASE="makefile_fbase"
+SUBMAKEFILE="SubMakefile"
+if [ "$*" != "" ]; then 
+  echo "COMMAND PARAMETER IS:"$*
+fi
+
+if [ "$1" = "fbase" ]; then
+	echo "MakeFile For HUNDSUN FBASE2"
+	fundcodetool $SUBMAKEFILE ../../workspace/
+	make -f $MAKEFILENAME_FBASE clean
+	make -f $MAKEFILENAME_FBASE
+if [ "$2" != "noboot" ]; then 
+	LocalAdmin -stop -s "$SERVERNAME" 
+fi
+
+	rm ../../bin/lib"$SERVERNAME".so
+	mv lib"$SERVERNAME".so ../../bin
+if [ "$2" != "noboot" ]; then 
+	LocalAdmin -start -s "$SERVERNAME"
+fi
+else
+  mv $TUXINC/sqlca.h $TUXINC/sqlca.h.bak
+  mv $TUXINC/sqlda.h $TUXINC/sqlda.h.bak
+  mv $TUXINC/sqlcpr.h $TUXINC/sqlcpr.h.bak
+	echo "MakeFile For TUXEDO"
+	make -f $MAKEFILENAME_TUX clean
+	make -f $MAKEFILENAME_TUX
+
+	if [ "$2" != "noboot" ]; then 
+		tmshutdown -s "$SERVERNAME"
+	fi
+		rm ../../bin/"$SERVERNAME"
+		mv "$SERVERNAME" ../../bin
+	if [ "$2" != "noboot" ]; then 
+		tmboot -s "$SERVERNAME"
+	fi
+fi

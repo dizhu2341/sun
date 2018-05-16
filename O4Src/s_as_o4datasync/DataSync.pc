@@ -1,0 +1,1027 @@
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+#include <vector>
+#include <exception>
+
+#include "DataSync.h"
+#include "Mutex.h"
+
+using namespace std;
+
+CMutexMgr *gCMutexMgr = CMutexMgr::GetInstance();
+
+CDataSync::CDataSync(IAS2Context * lpContext)
+{
+    m_lpContext = lpContext;
+    m_lpDataRecord = NULL;
+    m_nBatchRows = 10000;
+    m_nTotalRows = 0;
+    m_nLoopTimes = 0;
+    m_nRemainRows = 0;
+    m_nFetchRows = 0;
+
+    m_cSyncFlag = '1';
+
+    // 初始化错误信息和错误号
+    m_nErrNo = 0;
+    memset(m_sErrInfo, 0, sizeof (m_sErrInfo));
+
+    // 初始化 源表,中间转换表,目标表
+    memset(m_sSrcTable, 0, sizeof (m_sSrcTable));
+    memset(m_sTmpTable, 0, sizeof (m_sTmpTable));
+    memset(m_sDstTable, 0, sizeof (m_sDstTable));
+    memset(m_sSrcView, 0, sizeof (m_sSrcView));
+
+    m_syncLock = NULL;
+    m_lpO3Conn = NULL;
+    m_lpO4Conn = NULL;
+}
+
+CDataSync::~CDataSync()
+{
+    if (m_lpO3Conn)
+        m_lpO3Conn->toFree();
+
+    if (m_lpO4Conn)
+        m_lpO4Conn->toFree();
+
+    //放在此处是考虑中途异常退出情况
+    if (!UnLock())
+    {
+        SetErrorInfo(SYNC_ERR_UNLOCK_MUTEX, "【%s】表同步，同步互斥锁解锁失败", m_sDstTable);
+    }
+}
+
+// 从同步锁池中获取锁
+
+bool CDataSync::Lock()
+{
+    m_syncLock = gCMutexMgr->GetLock(m_sDstTable);
+    if (NULL == m_syncLock)
+    {
+        SetErrorInfo(SYNC_ERR_LOCK_MUTEX, "【%s】表同步，获取同步互斥锁失败", m_sDstTable);
+        return false;
+    }
+    return (0 == pthread_mutex_lock(m_syncLock)) ? true : false;  /*lint !e454*/
+}     /*lint !e456*/
+
+// 释放同步锁
+
+bool CDataSync::UnLock()
+{
+    return gCMutexMgr->FreeLock(m_sDstTable);
+}
+
+// 初始化同步对象
+
+bool CDataSync::Init()
+{
+    //初始化数据库连接对象以及PROC上下文
+    m_lpO3Conn = m_lpContext->GetDBConnection(O3DB);
+    if (!m_lpO3Conn)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O3数据库连接失败！请检查JC_AS是否正常连接O3数据库！", m_sDstTable);
+        return false;
+    }
+
+    m_lpO4Conn = m_lpContext->GetDBConnection(O3DB);
+    if (!m_lpO4Conn)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O4基础数据库连接失败！请检查JC_AS是否正常连接O4数据库！", m_sDstTable);
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * 同步主流程控制入口
+ * @return true-成功，false-失败
+ */
+bool CDataSync::doSync(char cSyncFlag)
+{
+    m_cSyncFlag = cSyncFlag;
+    if (! BeforeAction())  // 同步前准备
+        return false;
+    if (! SyncAction())    // 同步动作
+        return false;
+    if (! AfterAction())   // 同步后动作
+        return false;
+    return true;
+}
+
+bool CDataSync::SyncAction()
+{
+    if (!ExpO3View2Temp())    // 从O32拿数据放入中间表
+        return false;
+    if (!ExpTemp2Dst())     // 转入目标表
+        return false;
+    return true;
+}
+
+bool CDataSync::AfterAction()
+{
+    return true;
+}
+
+/**
+ * 初始化循环信息：表数据总行数、循环次数、每批次指定插入的数据、最后一批次插入的数据行数、实际每批次插入的数据行数
+ * @return true-成功，false-失败
+ */
+bool CDataSync::GetLoopInfo()
+{
+    m_nTotalRows = GetViewRecordCount();
+    if (m_nTotalRows < 0)
+        return false;
+
+    m_nRemainRows = (unsigned int)m_nTotalRows % m_nBatchRows;
+    m_nLoopTimes = (m_nRemainRows != 0 ? ((int)(m_nTotalRows * 1.0 / m_nBatchRows) + 1) : ((int)(m_nTotalRows * 1.0 / m_nBatchRows)));
+    if (m_nRemainRows == 0)
+        m_nRemainRows = m_nBatchRows;
+    return true;
+}
+
+bool CDataSync::SyncToMDB(char *sTableName, char*sWhereStr)
+{
+    int nRet = 0;
+    int nErrNo = 0;
+    char sErrInfo[256] = {0};
+    char sErrPathInfo[256] = {0};
+    IF2Packer* lpInPacker = m_lpContext->GetF2PackSvr()->GetPacker(2);
+    IF2Packer* lpOutPacker = m_lpContext->GetF2PackSvr()->GetPacker(2);
+
+    lpInPacker->BeginPack();
+    lpInPacker->AddField("table_name");
+    lpInPacker->AddField("where_str");
+    lpInPacker->AddStr(sTableName);
+    lpInPacker->AddStr(sWhereStr);
+    lpInPacker->EndPack();
+
+    nRet = SyncMdbData(m_lpContext, lpInPacker->UnPack(), lpOutPacker, &nErrNo, sErrInfo, sErrPathInfo);
+    if (nRet != 0)
+    {
+        SetErrorInfo(SYNC_ERR_OTHER, "【%s】表同步，同步【%s】到内存数据库失败【%s】", m_sDstTable, sTableName, sErrInfo);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * 查询来源表记录数
+ * @return 记录数
+ */
+int CDataSync::GetViewRecordCount()
+{
+    char selectSQL[1028] = {0};
+    sprintf(selectSQL, "SELECT count(*) recordcnt from %s", m_sSrcView);
+
+    if (m_lpO3Conn == NULL)
+        return -1;
+
+    IF2ResultSet *lpResult = m_lpO3Conn->executeQuery(selectSQL);
+    if (lpResult == NULL)
+    {
+        SetErrorInfo(SYNC_ERR_GET_TABLE_COUNT, "【%s】表同步，查询O3视图【%s】记录数失败【%s】", m_sDstTable, m_sSrcView, m_lpO3Conn->getErrInfo());
+        return -1;
+    }
+
+    int rowNums = lpResult->GetInt("recordcnt");
+    lpResult->Destroy();     //释放数据集.
+    return rowNums;
+}
+
+/**
+ * 导出数据到临时表
+ * @return true-成功，false-失败
+ */
+bool CDataSync::ExpO3View2Temp()
+{
+    return true;
+}
+
+/**
+ * 从临时表里导出数据到目标表
+ * @return true-成功，false-失败
+ */
+bool CDataSync::ExpTemp2Dst()
+{
+    return true;
+}
+
+//
+
+bool CDataSync::GetO32ColInfoLst(vector<COraColInfo*> &oraColVec)
+{
+    char selectSQL[1028] = {0};
+    sprintf(selectSQL, "SELECT lower(t.COLUMN_NAME) as COLUMN_NAME,t.DATA_TYPE,t.DATA_LENGTH,t.DATA_PRECISION,t.DATA_SCALE FROM user_tab_columns t WHERE t.TABLE_NAME=UPPER('%s')", m_sSrcTable);
+
+    if (m_lpO3Conn == NULL)
+        return false;
+    IF2ResultSet *lpResult = m_lpO3Conn->executeQuery(selectSQL);
+    if (lpResult == NULL)
+    {
+        SetErrorInfo(SYNC_ERR_GET_SYNC_INFO, "【%s】表同步，查询O3表列字段信息失败【%s】", m_sDstTable, m_lpO3Conn->getErrInfo());
+        return false;
+    }
+
+    while (!lpResult->IsEOF())
+    {
+        oraColVec.push_back(new COraColInfo(
+                                            lpResult->GetStr("column_name"),
+                                            lpResult->GetStr("data_type"),
+                                            lpResult->GetInt("data_length"),
+                                            lpResult->GetInt("data_precision"),
+                                            lpResult->GetInt("data_scale"))
+                            );
+        lpResult->Next();
+    }
+
+    //释放数据集.
+    lpResult->Destroy();
+    return true;
+}
+
+/**
+ * 校验同步字段是否合法（数据类型、长度、精度）
+ * @return true-成功，false-失败
+ */
+
+bool CDataSync::CheckSyncFieldValid()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，检查同步字段合法性开始");
+    // 从O4获取需要同步的字段信息
+    if (!GetSyncFieldLst())
+    {
+        return false;
+    }
+
+    // 从O32获取对应表的数据库字段列表
+    vector<COraColInfo*> oraColVec;
+    if (!GetO32ColInfoLst(oraColVec))
+    {
+        return false;
+    }
+
+    // 比较O32的数据库字段精度和需要同步字段的精度,是否符合标准
+    for (unsigned int i = 0; i < syncFieldVec.size(); i++)
+    {
+        CSyncFieldInfo* lpField = syncFieldVec[i];
+        if (! lpField->IsUse) // 字段不启用
+            continue;
+
+        // 判断当前字段是否符合标准	
+        for (unsigned int j = 0; j < oraColVec.size(); ++j)
+        {
+            COraColInfo* lpOraInfo = oraColVec[j];
+            if (lpField->ColName != lpOraInfo->ColName)
+                continue;
+
+            // 比较数据类型
+            if (lpField->ColType != lpOraInfo->ColType)
+            {
+                SetErrorInfo(SYNC_ERR_VALIDATE_FIELD, "【%s】表同步，校验表【%s】字段【%s】数据类型一致性失败：'%s'=>'%s'",
+                             m_sDstTable,
+                             m_sSrcTable,
+                             lpField->ColName.c_str(),
+                             lpOraInfo->ColType.c_str(),
+                             lpField->ColType.c_str()
+                             );
+                return false;
+            }
+
+            // 比较字段长度
+            if (lpOraInfo->ColType == "VARCHAR2" && lpOraInfo->DataLen > lpField->FieldWidth)
+            {
+                SetErrorInfo(SYNC_ERR_VALIDATE_FIELD, "【%s】表同步，校验表【%s】字段【%s】数据长度兼容性失败：'%d'=>'%d'",
+                             m_sDstTable,
+                             m_sSrcTable,
+                             lpField->ColName.c_str(),
+                             lpOraInfo->DataLen,
+                             lpField->FieldWidth
+                             );
+                return false;
+            }
+
+            //如果O3表字段长度大于同步配置表中定义的长度（数字）
+            if (lpOraInfo->ColType == "NUMBER" && lpOraInfo->DataPrec > lpField->FieldWidth)
+            {
+                SetErrorInfo(SYNC_ERR_VALIDATE_FIELD, "【%s】表同步，校验表【%s】字段【%s】数据长度兼容性失败：'%d'=>'%d'",
+                             m_sDstTable,
+                             m_sSrcTable,
+                             lpField->ColName.c_str(),
+                             lpOraInfo->DataPrec,
+                             lpField->FieldWidth
+                             );
+                return false;
+            }
+
+            //如果O3表字段的精度大于同步配置表中定义的精度
+            if (lpOraInfo->ColType == "NUMBER"  &&  lpOraInfo->DataScale > lpField->FieldScale)
+            {
+                SetErrorInfo(SYNC_ERR_VALIDATE_FIELD, "【%s】表同步，校验表【%s】字段【%s】数据精度兼容性失败：'%d'=>'%d'",
+                             m_sDstTable,
+                             m_sSrcTable,
+                             lpField->ColName.c_str(),
+                             lpOraInfo->DataScale,
+                             lpField->FieldScale
+                             );
+                return false;
+            }
+        }
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，检查同步字段合法性完成");
+    return true;
+}
+
+/**
+ * 查询同步字段配置信息
+ * @return true-成功，false-失败
+ */
+bool CDataSync::GetSyncFieldLst()
+{
+    char selectSQL[1028] = {0};
+    sprintf(selectSQL, "SELECT t.field_name,t.column_name,t.field_type,t.field_width,t.field_scale,t.default_value,t.use_flag FROM jc_tsyncfieldcfg t WHERE t.table_name='%s' AND t.vc_table_name_o4='%s'", m_sSrcTable, m_sDstTable);
+
+    if (m_lpO4Conn == NULL)
+    {
+        return false;
+    }
+    IF2ResultSet *lpResult = m_lpO4Conn->executeQuery(selectSQL);
+    if (lpResult == NULL)
+    {
+        SetErrorInfo(SYNC_ERR_GET_SYNC_INFO, "【%s】表同步，查询同步配置信息失败【%s】", m_sDstTable, m_lpO4Conn->getErrInfo());
+        return false;
+    }
+
+    while (!lpResult->IsEOF())
+    {
+        syncFieldVec.push_back(new CSyncFieldInfo(lpResult->GetStr("field_name"),
+                                                  lpResult->GetStr("column_name"),
+                                                  lpResult->GetChar("field_type"),
+                                                  lpResult->GetInt("field_width"),
+                                                  lpResult->GetInt("field_scale"),
+                                                  lpResult->GetStr("default_value"),
+                                                  lpResult->GetChar("use_flag") == '1'));
+        lpResult->Next();
+    }
+    //释放数据集.
+    lpResult->Destroy();
+    return true;
+}
+
+/**
+ * @desc 检查O32数据是否合法（有无数据重复）
+ * @return true/false
+ */
+bool CDataSync::CheckO3DataValid()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，检查O32数据唯一性开始");
+    //1、查询获取O4表的主键、索引信息
+    CO4TabInfo tabObj(m_lpO4Conn, m_sDstTable);
+    if (!tabObj.QueryPKColList() || !tabObj.QueryUKColArr())
+    {
+        SetErrorInfo(tabObj.GetErrorNo(), tabObj.GetErrorInfo().c_str());
+        return false;
+    }
+    
+    //2、根据O4表的主键信息，到O3视图中检查是否有重复数据
+    CO3ViewInfo viewObj(m_lpO3Conn, m_sSrcView);
+    if (!viewObj.IsUniqueViolated(tabObj.GetPKColList(), tabObj.GetKeyColumnCount()))
+    {
+        SetErrorInfo(viewObj.GetErrorNo(), viewObj.GetErrorInfo().c_str());
+        return false;
+    }
+    
+    //3、根据O4表的唯一索引信息，到O3视图中检查是否有重复数据
+    vector<string> vUKColArr = tabObj.GetUKColArr();
+    for (unsigned int i = 0; i<vUKColArr.size(); i++)
+    {
+        if (!viewObj.IsUniqueViolated(vUKColArr[i], tabObj.GetIndexColumnCount(i)))
+        {
+            SetErrorInfo(viewObj.GetErrorNo(), viewObj.GetErrorInfo().c_str());
+            return false;
+        }
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，检查O32数据唯一性完成");
+    return true;
+}
+
+// 判断中间表是否存在
+bool CDataSync::IsTmpTableExists()
+{
+    char selectSQL[1028] = {0};
+    sprintf(selectSQL, "SELECT count(*) cnt FROM user_tables WHERE table_name = upper('%s')", m_sTmpTable);
+
+    if (m_lpO4Conn == NULL)
+    {
+        return false;
+    }
+
+    IF2ResultSet *lpResult = m_lpO4Conn->executeQuery(selectSQL);
+    if (lpResult == NULL)
+    {
+        SetErrorInfo(SYNC_ERR_CLEAR_TEMP_TABLE, "【%s】表同步，查询中间转换表失败【%s】", m_sDstTable, m_lpO4Conn->getErrInfo());
+        return false;
+    }
+    int rowNums = lpResult->GetInt("cnt");
+    lpResult->Destroy();     //释放数据集.
+    return rowNums == 1;
+}
+
+// 删除中间表
+
+bool CDataSync::DropTmpTable()
+{
+    char execSQL[1028] = {0};
+    sprintf(execSQL, "DROP TABLE %s", m_sTmpTable);
+
+    if (m_lpO4Conn == NULL)
+        return false;
+    IStatement *lpStmt = m_lpO4Conn->createStatement();
+    int ret = lpStmt->prepare(execSQL);
+    if (ret != 0 )
+    {
+        SetErrorInfo(SYNC_ERR_DROP_TEMP_TABLE, "【%s】表同步，DROP中间转换表时准备SQL语句失败【%s】", m_sDstTable, m_lpO4Conn->getErrInfo());
+        return false;
+    }
+
+    ret = lpStmt->exec();
+    if (ret != 0 )
+    {
+        SetErrorInfo(SYNC_ERR_DROP_TEMP_TABLE, "【%s】表同步，DROP中间转换表失败【%s】", m_sDstTable, m_lpO4Conn->getErrInfo());
+        return false;
+    }
+    return true;
+}
+
+// 新增中间表
+
+bool CDataSync::CreateTmpTable()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，新建中间表开始");
+    char tmpStr[256] = {0};
+    char createSQL[8192] = {0};
+    sprintf(createSQL, "CREATE TABLE %s(\n", m_sTmpTable);
+    if (0 == strcmp(m_sDstTable, "jc_tstock"))
+        strcat(createSQL, " lineno number not null,\n");
+
+    for (unsigned int i = 0; i < syncFieldVec.size(); ++i)
+    {
+        CSyncFieldInfo* lpField = syncFieldVec[i];
+        memset(tmpStr, 0, sizeof (tmpStr));
+
+        switch (lpField->FieldType)
+        {
+            case 'S':
+                sprintf(tmpStr, "   %s VARCHAR2(%d) DEFAULT '%s'", lpField->FieldName.c_str(), lpField->FieldWidth, lpField->DefaultValue.c_str());
+                break;
+            case 'C':
+                sprintf(tmpStr, "   %s CHAR(1) DEFAULT '%s'", lpField->FieldName.c_str(), lpField->DefaultValue.c_str());
+                break;
+            case 'I':
+                sprintf(tmpStr, "   %s NUMBER(%d) DEFAULT %d", lpField->FieldName.c_str(), lpField->FieldWidth, atoi(lpField->DefaultValue.c_str()));
+                break;
+            case 'D':
+                sprintf(tmpStr, "   %s NUMBER(%d,%d) DEFAULT %f", lpField->FieldName.c_str(), lpField->FieldWidth, lpField->FieldScale, (double)atoi(lpField->DefaultValue.c_str()));
+                break;
+        }
+        if ( i != 0 )
+            strcat(createSQL, ",\n");
+        strcat(createSQL, tmpStr);
+    }
+    strcat(createSQL, ") TABLESPACE HS_JC_DATA");
+
+    if (m_lpO4Conn == NULL)
+    {
+        return false;
+    }
+    IStatement *lpStmt = m_lpO4Conn->createStatement();
+    int ret = lpStmt->prepare(createSQL);
+    if (ret != 0 )
+    {
+        SetErrorInfo(SYNC_ERR_CREATE_TEMP_TABLE, "【%s】表同步，新建中间转换表时准备SQL语句失败【%s】", m_sDstTable, m_lpO4Conn->getErrInfo());
+        return false;
+    }
+
+    ret = lpStmt->exec();
+    if (ret != 0 )
+    {
+        SetErrorInfo(SYNC_ERR_CREATE_TEMP_TABLE, "【%s】表同步，新建中间转换表失败【%s】", m_sDstTable, m_lpO4Conn->getErrInfo());
+        LOGDEBUG("createSQL=" << createSQL);
+        return false;
+    }
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，新建中间表完成");
+    return true;
+}
+
+// 删除临时表
+
+bool CDataSync::ClearTempTable()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，清除中间表开始");
+    bool isTableExists = IsTmpTableExists(); //检查中间转换表是否已存在
+    if (isTableExists)
+    {
+        if (!DropTmpTable())    // 存在则删除中间表
+            return false;
+    }
+    if (!CreateTmpTable())
+    {
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，清除中间表完成");
+    return true;
+}
+
+void CDataSync::SqlErrorAction()
+{
+    //    if (CheckDbLinkMethod(m_lpO3Conn, sqlca.sqlcode) < 0)
+    //    {
+    //        m_lpO3Conn->setErrMessage(HSDB_CONNECTION_STATUS_DISCONN, sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+    //    }
+    //    if (CheckDbLinkMethod(m_lpO4Conn, sqlca.sqlcode) < 0)
+    //    {
+    //        m_lpO4Conn->setErrMessage(HSDB_CONNECTION_STATUS_DISCONN, sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+    //    }
+}
+
+void CDataSync::SetErrorInfo(int nErrNo, const char* sErrInfoFmt, ...)
+{
+    m_nErrNo = nErrNo;
+    va_list oArglst;
+    memset(&oArglst, 0, sizeof (va_list));
+
+    va_start(oArglst, sErrInfoFmt);
+    vsprintf(m_sErrInfo, sErrInfoFmt, oArglst);
+    va_end(oArglst);
+
+    LOGERROR(m_nErrNo, m_sErrInfo);
+}
+
+int CDataSync::GetErrorNo()
+{
+    return m_nErrNo;
+}
+
+char* CDataSync::GetErrorInfo()
+{
+    return m_sErrInfo;
+}
+
+bool CDataSync::BeforeAction()
+{
+    // 初始化当前同步对象
+    if (!Init())
+        return false;
+    // 先给当前同步动作上锁,防止日初日间同时进行
+    if (!Lock())
+    {
+        SetErrorInfo(SYNC_ERR_LOCK_MUTEX, "【%s】表同步，同步互斥锁上锁失败", m_sDstTable);
+        return false;
+    }
+    // 校验源数据表和目标数据表的字段精度是否匹配
+    if (!CheckSyncFieldValid())
+        return false;
+    
+    // 校验源数据唯一性
+    if (!CheckO3DataValid())
+        return false;
+
+    //step1: 清空中间表的数据
+    if (!ClearTempTable())
+        return false;
+
+    //step2: 初始化循环信息（数据总行数、循环次数等）
+    if (!GetLoopInfo())
+        return false;
+
+    return true;
+}
+
+bool CDataSync::DropTableIndex()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始删除O4表【" << m_sDstTable << "】主键/索引");
+
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "删除【%s】表主键和索引，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    
+    EXEC SQL CONTEXT USE :o4Ctx;
+
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  V_CONSTRAINT_NAME VARCHAR2(64);"
+            "  V_INDEX_NAME      VARCHAR2(64);"
+            "  V_PK_KEY          VARCHAR2(256);"
+            "  V_IDX_KEY         VARCHAR2(256);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'DELETE FROM JC_TSYNCINDEX WHERE TABLE_NAME=UPPER(''' || V_TABLE_NAME_O4 || ''')';"
+            "  FOR PK_COL_ITEM IN (SELECT T1.TABLE_NAME,"
+            "                             T1.CONSTRAINT_NAME,"
+            "                             T2.COLUMN_NAME"
+            "                        FROM USER_CONSTRAINTS T1, USER_CONS_COLUMNS T2"
+            "                       WHERE T1.CONSTRAINT_NAME = T2.CONSTRAINT_NAME"
+            "                         AND T1.TABLE_NAME = UPPER(V_TABLE_NAME_O4)"
+            "                         AND T1.CONSTRAINT_TYPE = UPPER('p')) LOOP"
+            "    V_PK_KEY := CASE"
+            "                  WHEN V_PK_KEY IS NULL THEN"
+            "                   PK_COL_ITEM.COLUMN_NAME"
+            "                  ELSE"
+            "                   (V_PK_KEY || ',' || PK_COL_ITEM.COLUMN_NAME)"
+            "                END;"
+            "    V_CONSTRAINT_NAME := PK_COL_ITEM.CONSTRAINT_NAME;"
+            "  END LOOP;"
+            "  IF V_CONSTRAINT_NAME IS NOT NULL THEN"
+            "    EXECUTE IMMEDIATE 'INSERT INTO JC_TSYNCINDEX(TABLE_NAME,INDEX_NAME,INDEX_TYPE,INDEX_COLUMN_LIST) VALUES (UPPER(''' || V_TABLE_NAME_O4 || '''), ''' || V_CONSTRAINT_NAME ||''', ''P'', ''' || V_PK_KEY ||''')';"
+            "    EXECUTE IMMEDIATE 'ALTER TABLE ' || V_TABLE_NAME_O4 || ' DROP PRIMARY KEY';"
+            "  END IF;"
+            ""
+            "  FOR IDX_ITEM IN (SELECT DISTINCT T1.INDEX_NAME"
+            "                     FROM USER_INDEXES T1, USER_IND_COLUMNS T2"
+            "                    WHERE T1.INDEX_NAME = T2.INDEX_NAME"
+            "                      AND T1.TABLE_NAME = UPPER(V_TABLE_NAME_O4)) LOOP"
+            "    V_INDEX_NAME := IDX_ITEM.INDEX_NAME;"
+            "    V_IDX_KEY    := NULL;"
+            "    FOR IDX_COL_ITEM IN (SELECT T.COLUMN_NAME"
+            "                           FROM USER_IND_COLUMNS T"
+            "                          WHERE T.INDEX_NAME = V_INDEX_NAME) LOOP"
+            "      V_IDX_KEY := CASE"
+            "                     WHEN V_IDX_KEY IS NULL THEN"
+            "                      IDX_COL_ITEM.COLUMN_NAME"
+            "                     ELSE"
+            "                      (V_IDX_KEY || ',' || IDX_COL_ITEM.COLUMN_NAME)"
+            "                   END;"
+            "    END LOOP;"
+            "    EXECUTE IMMEDIATE 'INSERT INTO JC_TSYNCINDEX(TABLE_NAME,INDEX_NAME,INDEX_TYPE,INDEX_COLUMN_LIST) VALUES (UPPER(''' || V_TABLE_NAME_O4 || '''), ''' || V_INDEX_NAME ||''', ''I'', ''' || V_IDX_KEY ||''')';"
+            "    EXECUTE IMMEDIATE 'DROP INDEX ' || V_INDEX_NAME;"
+            "  END LOOP;"
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_DROP_INDEX, "【%s】表同步，删除主键/索引失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，删除O4表【" << m_sDstTable << "】主键/索引完成");
+    return true;
+}
+
+bool CDataSync::RecoverTableIndex()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始重建O4表【" << m_sDstTable << "】主键/索引");
+
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;  
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "删除【%s】表主键和索引，获取O4数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    
+    EXEC SQL CONTEXT USE :o4Ctx;
+
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4 VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4 := '%s';"
+            "  FOR IDX_COL_ITEM IN (SELECT T.TABLE_NAME,"
+            "                              T.INDEX_TYPE,"
+            "                              T.INDEX_NAME,"
+            "                              T.INDEX_COLUMN_LIST"
+            "                         FROM JC_TSYNCINDEX T"
+            "                        WHERE T.TABLE_NAME = UPPER(V_TABLE_NAME_O4)) LOOP"
+            "    IF IDX_COL_ITEM.INDEX_TYPE = 'P' THEN"
+            "      EXECUTE IMMEDIATE 'ALTER TABLE ' || V_TABLE_NAME_O4 ||"
+            "                        ' ADD CONSTRAINT ' || IDX_COL_ITEM.INDEX_NAME ||"
+            "                        ' PRIMARY KEY(' || IDX_COL_ITEM.INDEX_COLUMN_LIST ||"
+            "                        ') USING INDEX TABLESPACE HS_JC_IDX';"
+            "    ELSIF IDX_COL_ITEM.INDEX_TYPE = 'I' THEN"
+            "      EXECUTE IMMEDIATE 'CREATE INDEX ' || IDX_COL_ITEM.INDEX_NAME ||"
+            "                        ' ON ' || V_TABLE_NAME_O4 || ' (' ||"
+            "                        IDX_COL_ITEM.INDEX_COLUMN_LIST ||"
+            "                        ') TABLESPACE HS_JC_IDX';"
+            "    END IF;"
+            "  END LOOP;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(DB_ERR_RECOVER_INDEX, "【%s】表同步，重建主键/索引失败【%s】", m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，重建O4表【" << m_sDstTable << "】主键/索引完成");
+    return true;
+}
+
+CO3ViewInfo::CO3ViewInfo(IConnection * lpO3Conn, string sViewName)
+{
+    m_lpO3Conn = lpO3Conn;
+    m_sViewName = sViewName;
+    m_nErrNo = 0;
+    m_sErrInfo = "";
+}
+
+CO3ViewInfo::~CO3ViewInfo()
+{
+    
+}
+
+/**
+ * @desc 判断O4传过来的唯一性字段在O3视图中是否存在
+ * @param sUKColList
+ * @return true/false
+ */
+bool CO3ViewInfo::IsColumnExist(string sUKColList, int nColumnCount)
+{
+    if (nColumnCount <= 0)
+    {
+        LOGWARN("传入的唯一性字段数为空，不需检查");
+        return false;
+    }
+        
+    char sUKCol[4096] = "'";
+    char sColumnList[4096] = {0};  
+    strcpy(sColumnList, sUKColList.c_str());   
+    
+    // 返回逗号之前的字符串地址
+    char *lpColumn = strtok(sColumnList, ",");
+    // 把所有字段写成'column1', 'column2'的模式
+    for (int i = 0; (NULL != lpColumn) && (i < nColumnCount); ++i)
+    {
+        if (0 != i)
+        {
+            strcat(sUKCol, ",'");
+        }
+        strcat(sUKCol, lpColumn);
+        strcat(sUKCol, "'");       
+        // 返回下一个逗号之前的字符串地址
+       lpColumn = strtok(NULL, ",");
+    }
+    
+    char sExecSql[1024] = {0};  
+    char sErrInfo[4096] = {0};
+    sprintf(sExecSql, "select count(*) as column_count from user_tab_columns where table_name = upper('%s') and column_name in (%s)", m_sViewName.c_str(), sUKCol);
+    IF2ResultSet *lpColumnCountResult = m_lpO3Conn->executeQuery(sExecSql);
+    if (NULL == lpColumnCountResult)
+    {
+        sprintf(sErrInfo, "检查O3视图【%s】字段是否和基础表主键对应的执行SQL【%s】异常：%s", m_sViewName.c_str(), sExecSql, m_lpO3Conn->getErrInfo());
+        SetErrorInfo(DB_ERR_QUERY, sErrInfo);
+        return false;
+    }
+    if (nColumnCount != atoi(lpColumnCountResult->GetStr("column_count")))
+    {
+        lpColumnCountResult->Destroy();
+        LOGWARN("检测到O3视图" << m_sViewName.c_str() << "中的字段和基础表的唯一性字段不一致，跳过这个唯一性检查" );
+        return false;
+    }
+    lpColumnCountResult->Destroy();
+    return true;
+}
+
+/**
+ * @desc 判断O3视图数据是否存在唯一性冲突
+ * @param m_vUKColArr
+ * @return true/false
+ */
+bool CO3ViewInfo::IsUniqueViolated(string sUKColList, int nColumnCount)
+{
+    if (NULL == m_lpO3Conn)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "检查到O3数据库连接串异常。");
+        return false;
+    }
+    
+    if (sUKColList.length() <= 0)
+    {
+        LOGWARN("传入的唯一性字段为空，不需检查");
+        return true;
+    }
+    
+    // 如果O3视图中不存在基础表主键的字段，则跳过检查
+    if (!IsColumnExist(sUKColList, nColumnCount))
+    {        
+        return true;
+    }
+    
+    // 通过基础表的主键去查找O3视图是否存在重复数据        
+    char sExecSql[1024] = {0};  
+    sprintf(sExecSql, "SELECT %s, COUNT(1) AS row_count FROM %s GROUP BY %s HAVING COUNT(1)>1", sUKColList.c_str(), m_sViewName.c_str(), sUKColList.c_str());
+    IF2ResultSet *lpResult = m_lpO3Conn->executeQuery(sExecSql);
+    if (NULL == lpResult && m_lpO3Conn->getErrNo() == 904)
+    {
+        LOGWARN("检测到字段【"<<sUKColList.c_str()<<"】在O3视图【"<<m_sViewName.c_str()<<"】里找不到,跳过这个索引的检查");
+        return true;
+    }
+    
+    char sErrInfo[4096] = {0};
+    if (NULL == lpResult)
+    {
+        sprintf(sErrInfo, "校验O3视图【%s】数据唯一性执行SQL【%s】异常：%s", m_sViewName.c_str(), sExecSql, m_lpO3Conn->getErrInfo());
+        SetErrorInfo(DB_ERR_QUERY, sErrInfo);
+        return false;
+    }
+    
+    //如果找不到重复数据，则返回true
+    if (lpResult->IsEmpty())
+    {
+        lpResult->Destroy();
+        return true;
+    }
+    
+    //如果有发现重复数据，显示重复数据明细
+    char sDataVal[1024] = {0};
+    while (!lpResult->IsEOF())
+    {
+        for (int i = 0; i<lpResult->GetColCount()-1; i++)
+        {
+            if (i == 0)
+                sprintf(sDataVal, "%s", lpResult->GetStrByIndex(i));
+            else
+                sprintf(sDataVal, "%s,%s", sDataVal, lpResult->GetStrByIndex(i));
+        }
+        sprintf(sErrInfo, "检查到O3视图【%s】存在重复数据，唯一键【%s】,数据值【%s】", m_sViewName.c_str(), sUKColList.c_str(), sDataVal);
+        SetErrorInfo(DB_ERR_QUERY, sErrInfo);
+        lpResult->Next();
+    }
+    lpResult->Destroy();
+    return false;
+}
+
+void CO3ViewInfo::SetErrorInfo(int nErrNo, const string sErrInfo)
+{
+    m_nErrNo = nErrNo;
+    m_sErrInfo = sErrInfo;
+}
+
+int CO3ViewInfo::GetErrorNo()
+{
+    return m_nErrNo;
+}
+
+string CO3ViewInfo::GetErrorInfo()
+{
+    return m_sErrInfo;
+}
+
+
+CO4TabInfo::CO4TabInfo(IConnection * lpO4Conn, string sTableName)
+{
+    m_lpO4Conn = lpO4Conn;
+    m_sTableName = sTableName;
+    m_nErrNo = 0;
+    m_sErrInfo = "";
+    m_sPKColList = "";
+    m_vUKColArr.clear();
+    m_nKeyColumnCount = 0;
+    memset(m_nIndexColumnCount, 0, sizeof (int ) * 32);
+}
+
+CO4TabInfo::~CO4TabInfo()
+{
+    
+}
+
+void CO4TabInfo::SetErrorInfo(int nErrNo, const string sErrInfo)
+{
+    m_nErrNo = nErrNo;
+    m_sErrInfo = sErrInfo;
+}
+
+int CO4TabInfo::GetErrorNo()
+{
+    return m_nErrNo;
+}
+
+string CO4TabInfo::GetErrorInfo()
+{
+    return m_sErrInfo;
+}
+
+bool CO4TabInfo::QueryPKColList()
+{
+    if (NULL == m_lpO4Conn)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "检查到O4数据库连接串异常。");
+        return false;
+    }
+    char sExecSql[512] = {0};
+    char sErrInfo[4096] = {0};
+    sprintf(sExecSql, "SELECT INDEX_NAME,"
+"       WM_CONCAT(COLUMN_NAME) AS COLUMN_NAME, COUNT(COLUMN_NAME) AS COLUMN_COUNT"
+"  FROM (SELECT A.CONSTRAINT_NAME INDEX_NAME, B.COLUMN_NAME"
+"          FROM USER_CONSTRAINTS A, USER_CONS_COLUMNS B"
+"         WHERE A.TABLE_NAME = UPPER('%s')"
+"           AND A.TABLE_NAME = B.TABLE_NAME"
+"           AND A.CONSTRAINT_NAME = B.CONSTRAINT_NAME"
+"           AND A.CONSTRAINT_TYPE = 'P')"
+" GROUP BY INDEX_NAME", m_sTableName.c_str());
+    IF2ResultSet *lpResult = m_lpO4Conn->executeQuery(sExecSql);
+    if (NULL == lpResult)
+    {
+        sprintf(sErrInfo, "查询O4表【%s】的主键信息执行SQL【%s】异常：%s", m_sTableName.c_str(), sExecSql, m_lpO4Conn->getErrInfo());
+        SetErrorInfo(DB_ERR_QUERY, sErrInfo);
+        return false;
+    }
+    if (lpResult->IsEmpty())
+    {
+        sprintf(sErrInfo, "检测到O4表【%s】没有定义主键信息", m_sTableName.c_str());
+        SetErrorInfo(DB_ERR_QUERY, sErrInfo);
+        lpResult->Destroy();
+        return true;
+    }
+    
+    m_sPKColList.assign(lpResult->GetStr("column_name"));
+    m_nKeyColumnCount = atoi(lpResult->GetStr("column_count"));
+    
+    lpResult->Destroy();
+    return true;
+}
+
+bool CO4TabInfo::QueryUKColArr()
+{
+    if (NULL == m_lpO4Conn)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "检查到O4数据库连接串异常。");
+        return false;
+    }
+    
+    char sExecSql[512] = {0};
+    char sErrInfo[4096] = {0};
+    sprintf(sExecSql, "SELECT INDEX_NAME,"
+"       WM_CONCAT(COLUMN_NAME) AS COLUMN_NAME, COUNT(COLUMN_NAME) AS COLUMN_COUNT"
+"  FROM (SELECT A.INDEX_NAME, B.COLUMN_NAME"
+"          FROM USER_INDEXES A, USER_IND_COLUMNS B"
+"         WHERE A.TABLE_NAME = UPPER('%s')"
+"           AND A.TABLE_NAME = B.TABLE_NAME"
+"           AND A.INDEX_NAME = B.INDEX_NAME AND A.UNIQUENESS = 'UNIQUE')"
+" GROUP BY INDEX_NAME", m_sTableName.c_str());
+    IF2ResultSet *lpResult = m_lpO4Conn->executeQuery(sExecSql);
+    if (NULL == lpResult)
+    {
+        sprintf(sErrInfo, "查询O4表【%s】的唯一索引信息执行SQL【%s】异常：%s", m_sTableName.c_str(), sExecSql, m_lpO4Conn->getErrInfo());
+        SetErrorInfo(DB_ERR_QUERY, sErrInfo);
+        return false;
+    }
+    
+    if (lpResult->IsEmpty())
+    {
+        LOGWARN("检测到O4表【"<<m_sTableName.c_str()<<"】没有定义唯一索引信息");
+        lpResult->Destroy();
+        return true;
+    }
+    
+    int nIndex = 0;
+    while (!lpResult->IsEOF())
+    {
+        string sTmpColName(lpResult->GetStr("column_name"));
+        m_vUKColArr.push_back(sTmpColName);
+        m_nIndexColumnCount[nIndex] = atoi(lpResult->GetStr("column_count"));
+        lpResult->Next();
+        ++nIndex;
+    }
+    lpResult->Destroy();
+    return true;
+}
+
+string CO4TabInfo::GetPKColList()
+{
+    return m_sPKColList;
+}
+
+vector<string> CO4TabInfo::GetUKColArr()
+{
+    return m_vUKColArr;
+}
+
+int CO4TabInfo::GetKeyColumnCount()
+{
+    return m_nKeyColumnCount;
+}
+
+int CO4TabInfo::GetIndexColumnCount(int iIndex)
+{
+    return m_nIndexColumnCount[iIndex];
+}

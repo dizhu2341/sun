@@ -1,0 +1,50 @@
+include ../../Makefile_fbase.hs
+include ./SubMakefile
+
+INCDIR=$(COMMONINC)
+LIBDIR=$(COMMONLIB) 
+
+PREINCL=$(ORACLE_HOME)/precomp/public
+
+PROGS = $(FBASE_MAIN) $(TMP_PROGS)
+
+OBJ = $(PROGS:.cpp=.o)
+OBJ1 = $(OBJ:.c=.o)
+OBJ2 = $(OBJ1:.pc=.c)
+OBJS = $(OBJ2:.c=.o)
+
+.SUFFIXES:
+.SUFFIXES: .pc .cpp .c .o 
+
+
+.pc.o:
+	@echo "}>>>>>>>>>>>>>>>>>>>>>>proc pc to cpp"
+	proc iname=$*.pc oname=$*.cpp $(ORCOPT_CPP) \
+	include=$(PREINCL) include=$(TUXINC) include=../public/ include=./ include=$(FBASE_HOME) include=$(FBASE_HOME)/Include/
+	$(CC) $(CFLAGS) -fpermissive -I$(PREINCL) -I$(TUXINC) -I ../public/ -I ./ -c $*.cpp -o $@
+	@echo "compile $*.pc ok"
+	
+.cpp.o:
+	$(CC) $(CFLAGS) -fpermissive $(INCDIR) -c  $< -o $@
+	
+.c.o:
+	cc $(CFLAGS) $(INCDIR) -c  $< -o $@
+#	cl /c $(DEFINE) -D "WINDOWS" /Fo$*.obj $*.c /nologo /W1 -I. -I$(OCIINCL) -I$(PREINCL) -I$(VCINCL) -I$(TUXINCL)
+
+all: $(ANAME)
+
+$(ANAME): $(OBJS)
+	$(CC) $(SOFLAG) $(OBJS) -o$(COMMONBIN)/lib$(ANAME).so $(DBLIB) -L../../workspace/lib -lt2sdk
+	
+clean:
+	$(RM) $(OBJS) $(ANAME)
+	$(RM) *.o
+	$(RM) tp*
+	$(RM) -r SunWS_cache
+	$(RM) ir.out
+list:
+	@echo $(PROGS) | \
+	sed -e 's/^/$(CNAME)\/$(ANAME)\//' \
+	-e 's/ / $(CNAME)\/$(ANAME)\//g'|tr ' ' '\012'
+
+

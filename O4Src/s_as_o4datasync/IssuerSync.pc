@@ -1,0 +1,198 @@
+#include "IssuerSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CIssuerSync::CIssuerSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tissuer");
+    strcpy(m_sSrcView, "VO4JC_ISSUER");
+    strcpy(m_sTmpTable, "sync_issuer");
+    strcpy(m_sDstTable, "jc_tissuer");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CIssuerSync::~CIssuerSync()
+{
+}
+
+bool CIssuerSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct IssuerRecord
+    {
+        int issuer_id[BATCH_ROWS];
+        char issuer_name[BATCH_ROWS][129];
+        char issuer_code[BATCH_ROWS][33];
+        char full_name_issuer[BATCH_ROWS][129];
+        char issuer_type[BATCH_ROWS][2];
+        int mother_issuer_id[BATCH_ROWS];
+        char issuer_outer_appraise[BATCH_ROWS][2];
+        char issuer_inside_appraise[BATCH_ROWS][2];
+        char issuer_appraise[BATCH_ROWS][2];
+        double net_value[BATCH_ROWS];
+        double credit_limit[BATCH_ROWS];
+        char guarantor_appraise[BATCH_ROWS][2];
+        int issuer_outer_appraise_date[BATCH_ROWS];
+        double guarantor_limit[BATCH_ROWS];
+        double total_value[BATCH_ROWS];
+    } IssuerRecord;
+    IssuerRecord *lpIssuerRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpIssuerRecord =  new IssuerRecord();
+    if (NULL == lpIssuerRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【IssuerRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpIssuerRecord, 0, sizeof (IssuerRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select issuer_id, issuer_name, issuer_code, full_name_issuer, issuer_type, 
+            mother_issuer_id, issuer_outer_appraise, issuer_inside_appraise, issuer_appraise, 
+            net_value, credit_limit, guarantor_appraise, issuer_outer_appraise_date,guarantor_limit,total_value 
+        from VO4JC_ISSUER;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpIssuerRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpIssuerRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpIssuerRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_issuer(issuer_id, issuer_name, issuer_code, full_name_issuer, issuer_type, mother_issuer_id, issuer_outer_appraise, issuer_inside_appraise, issuer_appraise, net_value, credit_limit, guarantor_appraise, issuer_outer_appraise_date,guarantor_limit,total_value )
+             values(:lpIssuerRecord->issuer_id,
+										rtrim(:lpIssuerRecord->issuer_name),
+										rtrim(:lpIssuerRecord->issuer_code),
+										rtrim(:lpIssuerRecord->full_name_issuer),
+										rtrim(:lpIssuerRecord->issuer_type),
+										:lpIssuerRecord->mother_issuer_id,
+										rtrim(:lpIssuerRecord->issuer_outer_appraise),
+										rtrim(:lpIssuerRecord->issuer_inside_appraise),
+										rtrim(:lpIssuerRecord->issuer_appraise),
+										:lpIssuerRecord->net_value,
+										:lpIssuerRecord->credit_limit,
+										rtrim(:lpIssuerRecord->guarantor_appraise),
+										:lpIssuerRecord->issuer_outer_appraise_date,
+                                        :lpIssuerRecord->guarantor_limit,
+                                        :lpIssuerRecord->total_value);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpIssuerRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpIssuerRecord;
+    return true;
+}
+
+bool CIssuerSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME      VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME := '%s';"
+            ""
+            "  EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || V_TABLE_NAME;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME || '(' ||   "
+            "        ' ISSUER_ID,' ||  "
+            "        ' ISSUER_NAME,' ||  "
+            "        ' ISSUER_CODE,' ||  "
+            "        ' FULL_NAME_ISSUER,' ||  "
+            "        ' ISSUER_TYPE,' ||  "
+            "        ' MOTHER_ISSUER_ID,' ||  "
+            "        ' ISSUER_OUTER_APPRAISE,' ||  "
+            "        ' ISSUER_INSIDE_APPRAISE,' ||  "
+            "        ' ISSUER_APPRAISE,' ||  "
+            "        ' NET_VALUE,' ||  "
+            "        ' CREDIT_LIMIT,' ||  "
+            "        ' GUARANTOR_APPRAISE,' ||  "
+            "        ' ISSUER_OUTER_APPRAISE_DATE,GUARANTOR_LIMIT,TOTAL_VALUE)' ||  "
+            "        ' SELECT T1.ISSUER_ID,' ||  "
+            "        ' NVL(T1.ISSUER_NAME, '' ''),' ||  "
+            "        ' NVL(T1.ISSUER_CODE, '' ''),' ||  "
+            "        ' NVL(T1.FULL_NAME_ISSUER, '' ''),' ||  "
+            "        ' NVL(T1.ISSUER_TYPE, '' ''),' ||  "
+            "        ' NVL(T1.MOTHER_ISSUER_ID, 0),' ||  "
+            "        ' NVL(T1.ISSUER_OUTER_APPRAISE, '' ''),' ||  "
+            "        ' NVL(T1.ISSUER_INSIDE_APPRAISE, '' ''),' ||  "
+            "        ' NVL(T1.ISSUER_APPRAISE, '' ''),' ||  "
+            "        ' T1.NET_VALUE,' ||  "
+            "        ' T1.CREDIT_LIMIT,' ||  "
+            "        ' NVL(T1.GUARANTOR_APPRAISE, '' ''),' ||  "
+            "        ' T1.ISSUER_OUTER_APPRAISE_DATE,T1.GUARANTOR_LIMIT,T1.TOTAL_VALUE' || "
+            "        '  FROM SYNC_ISSUER T1' ;"
+            ""
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

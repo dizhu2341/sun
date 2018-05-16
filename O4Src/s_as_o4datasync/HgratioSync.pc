@@ -1,0 +1,204 @@
+#include "HgratioSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CHgratioSync::CHgratioSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "thgratio");
+    strcpy(m_sSrcView, "VO4JC_HGRATIO");
+    strcpy(m_sTmpTable, "sync_hgratio");
+    strcpy(m_sDstTable, "jc_thgratio");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CHgratioSync::~CHgratioSync()
+{
+}
+
+bool CHgratioSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct HgratioRecord
+    {
+        char market_no[BATCH_ROWS][2];
+        char report_code[BATCH_ROWS][33];
+        char parameter_type[BATCH_ROWS][2];
+        double hg_param_value[BATCH_ROWS];
+        double sys_ratio[BATCH_ROWS];
+    } HgratioRecord;
+    HgratioRecord *lpHgratioRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpHgratioRecord = new HgratioRecord();
+    if (NULL == lpHgratioRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【HgratioRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpHgratioRecord, 0, sizeof (HgratioRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select market_no, report_code, parameter_type, hg_param_value, sys_ratio 
+                    from VO4JC_HGRATIO;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpHgratioRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpHgratioRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpHgratioRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_hgratio(market_no, report_code, parameter_type, hg_param_value, sys_ratio)
+             values(rtrim(:lpHgratioRecord->market_no),
+										rtrim(:lpHgratioRecord->report_code),
+										rtrim(:lpHgratioRecord->parameter_type),
+										:lpHgratioRecord->hg_param_value,
+										:lpHgratioRecord->sys_ratio);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpHgratioRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpHgratioRecord;
+    return true;
+}
+
+bool CHgratioSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+    
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_START_INTER_CODE NUMBER := 0;"
+            "  V_INIT_TYPE       CHAR(1);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  V_INIT_DATE       NUMBER(8); "
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  V_INIT_TYPE      := '%c';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  SELECT MAX(TO_NUMBER(SUBSTR(TO_CHAR(INTER_CODE), 1, 7)))"
+            "    INTO V_START_INTER_CODE"
+            "    FROM (SELECT INTER_CODE,"
+            "                 CASE"
+            "                   WHEN MARKET_NO IN (1, 2, 5) AND LENGTH(REPORT_CODE) <= 6 AND"
+            "                        REGEXP_LIKE(REPORT_CODE, '^[0-9]+$') THEN"
+            "                    1"
+            "                   ELSE"
+            "                    0"
+            "                 END MM"
+            "            FROM JC_TCONVERTINTERCODE)"
+            "   WHERE MM = 0;"
+            "  V_START_INTER_CODE := CASE"
+            "                          WHEN V_START_INTER_CODE IS NULL THEN"
+            "                           0"
+            "                          ELSE"
+            "                           V_START_INTER_CODE - 1000000"
+            "                        END;"
+            ""
+            " SELECT INIT_DATE INTO V_INIT_DATE FROM JC_TSYSTEMINFO;"
+            "  IF V_INIT_TYPE <> '1' THEN"
+            "    EXECUTE IMMEDIATE 'INSERT INTO JC_TCONVERTINTERCODE(MARKET_NO,REPORT_CODE,INTER_CODE)' ||"
+            "                      '  SELECT V.MARKET_NO,' ||"
+            "                      '         V.REPORT_CODE,' ||"
+            "                      '         SF_CREATE_INTERCODE_WITH_INDEX(V.MARKET_NO,' ||"
+            "                      '                                        V.REPORT_CODE,' ||"
+            "                      '                                        '||V_START_INTER_CODE||' + V.RN)' ||"
+            "                      '    FROM (SELECT T1.*, T2.INTER_CODE,ROW_NUMBER() OVER(ORDER BY CASE WHEN t2.INTER_CODE IS NULL THEN 1 ELSE 2 END) RN' ||"
+            "                      '            FROM (SELECT DISTINCT A.MARKET_NO MARKET_NO_SRC,' ||"
+            "                      '                                  B.MARKET_NO,' ||"
+            "                      '                                  A.REPORT_CODE' ||"
+            "                      '                    FROM SYNC_HGRATIO A, JC_TCONVERTMARKETNO B' ||"
+            "                      '                   WHERE A.MARKET_NO = B.MARKET_NO_SRC) T1' ||"
+            "                      '            LEFT JOIN JC_TCONVERTINTERCODE T2' ||"
+            "                      '              ON T1.MARKET_NO = T2.MARKET_NO' ||"
+            "                      '             AND T1.REPORT_CODE = T2.REPORT_CODE) V' ||"
+            "                      '             WHERE V.INTER_CODE IS NULL';"
+            "  END IF;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "	'   INTER_CODE,PARAMETER_TYPE,HG_PARAM_VALUE,MODIFY_DATE,SYS_RATIO) '   ||"
+            "       '   SELECT T3.INTER_CODE, T1.PARAMETER_TYPE, T1.HG_PARAM_VALUE,'||V_INIT_DATE||', T1.SYS_RATIO   '  ||"
+            "       '   FROM    SYNC_HGRATIO T1,JC_TCONVERTMARKETNO T2, JC_TCONVERTINTERCODE T3 '  ||"
+            "       '   WHERE T1.MARKET_NO = T2.MARKET_NO_SRC '  ||"
+            "       '   AND T1.REPORT_CODE = T3.REPORT_CODE '  ||"
+            "       '   AND T2.MARKET_NO = T3.MARKET_NO';"
+            "  COMMIT;"
+            "END;", m_sDstTable, m_cSyncFlag);
+
+    if (m_cSyncFlag == '2')
+    {
+        hsLockCreateInterCode();
+    }
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (m_cSyncFlag == '2')
+    {
+        hsUnlockCreateInterCode();
+    }
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+

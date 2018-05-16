@@ -1,0 +1,247 @@
+#include "OperatorSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+COperatorSync::COperatorSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "toperator");
+    strcpy(m_sSrcView, "VO4JC_OPERATOR");
+    strcpy(m_sTmpTable, "sync_operator");
+    strcpy(m_sDstTable, "jc_toperator");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+COperatorSync::~COperatorSync()
+{
+}
+
+bool COperatorSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct OperatorRecord
+    {
+        int operator_no[BATCH_ROWS];
+        char operator_code[BATCH_ROWS][129];
+        char domain_name[BATCH_ROWS][129];
+        char login_type[BATCH_ROWS][2];
+        int company_id[BATCH_ROWS];
+        int dept_id[BATCH_ROWS];
+        char operator_name[BATCH_ROWS][129];
+        char operator_status[BATCH_ROWS][2];
+        char stocktype_right[BATCH_ROWS][1025];
+    } OperatorRecord;
+    OperatorRecord *lpOperatorRecord = NULL;
+    char (*pStockTypeArr)[1025];
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpOperatorRecord = new OperatorRecord();
+    if (NULL == lpOperatorRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【OperatorRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpOperatorRecord, 0, sizeof (OperatorRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select operator_no, operator_code, domain_name, login_type, company_id, dept_id, operator_name, operator_status, stocktype_right 
+                    from   VO4JC_OPERATOR;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpOperatorRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+    pStockTypeArr = new char[BATCH_ROWS][1025];
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpOperatorRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpOperatorRecord;
+            delete pStockTypeArr;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+        ConvertStockTypeList(pStockTypeArr, lpOperatorRecord->stocktype_right);
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_operator(operator_no, operator_code, domain_name, login_type, company_id, dept_id, operator_name, operator_status, stocktype_right)
+             values(:lpOperatorRecord->operator_no,
+										:lpOperatorRecord->operator_no,
+										rtrim(:lpOperatorRecord->domain_name),
+										rtrim(:lpOperatorRecord->login_type),
+										:lpOperatorRecord->company_id,
+										:lpOperatorRecord->dept_id,
+										rtrim(:lpOperatorRecord->operator_name),
+										rtrim(:lpOperatorRecord->operator_status),
+										rtrim(:pStockTypeArr));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpOperatorRecord;
+            delete pStockTypeArr;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpOperatorRecord;
+    delete pStockTypeArr;
+    return true;
+}
+
+bool COperatorSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "       '   OPERATOR_NO, OPERATOR_CODE, DOMAIN_NAME, LOGIN_TYPE, COMPANY_ID, DEPT_ID, OPERATOR_NAME, OPERATOR_STATUS, STOCKTYPE_RIGHT)	'   ||"
+            "       '   SELECT T1.OPERATOR_NO, NVL(T1.OPERATOR_CODE,'' ''), NVL(T1.DOMAIN_NAME,'' ''), NVL(T1.LOGIN_TYPE,'' ''), T1.COMPANY_ID, T1.DEPT_ID, NVL(T1.OPERATOR_NAME,'' ''), NVL(T1.OPERATOR_STATUS,'' ''), NVL(T1.STOCKTYPE_RIGHT,'' '')   '   ||"
+            "       '   FROM SYNC_OPERATOR T1 ';"
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    if (!RecoverTableIndex())
+        return false;
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+void COperatorSync::ConvertStockTypeList(char (*pStockTypeArr)[1025], char sStockTypeSrc[BATCH_ROWS][1025])
+{
+    int nRet = 0;
+    int nErrNo = 0;
+    char sErrInfo[1025] = {0};
+    char sErrPathInfo[4001] = {0};
+    char sWhereStr[2048] = {0};
+    char sStockTypeList[4000] = {0};
+
+    IF2PackSvr * lpPackService = m_lpContext->GetF2PackSvr();
+    IF2Packer * lpInPacker = lpPackService->GetPacker(2);
+    IF2Packer * lpOutPacker = lpPackService->GetPacker(2);
+    IF2UnPacker * lpOutUnPacker = NULL;
+
+    for (int i = 0; i < BATCH_ROWS; ++i)
+    {
+        //查询内存表
+        replace(sWhereStr, sStockTypeSrc[i], ",", "','");
+        hs_snprintf(sWhereStr, sizeof (sWhereStr), "stock_type_src in ('%s')", sWhereStr);
+
+        lpInPacker->BeginPack();
+        lpInPacker->AddField("table_name", 'S');
+        lpInPacker->AddField("column_str", 'S');
+        lpInPacker->AddField("where_str", 'S', 2048);
+        lpInPacker->AddField("error_pathinfo", 'S', 4000);
+        lpInPacker->AddStr("jc_tconvertstocktype");
+        lpInPacker->AddStr("stock_type");
+        lpInPacker->AddStr(sWhereStr);
+        lpInPacker->AddStr(" ");
+        lpInPacker->EndPack();
+
+        lpOutPacker->BeginPack();
+        nRet = GetMdbData(m_lpContext, lpInPacker->UnPack(), lpOutPacker, &nErrNo, sErrInfo, sErrPathInfo);
+        lpOutPacker->EndPack();
+        if (nRet != 0)
+        {
+            SetErrorInfo(SYNC_ERR_OTHER, "【%s】表同步，转换证券类别列表时读取内存表失败【%s】", m_sDstTable, sErrInfo);
+
+            if (lpInPacker)
+            {
+                free(lpInPacker->GetPackBuf());
+                lpInPacker->Release();
+            }
+            if (lpOutPacker)
+            {
+                free(lpOutPacker->GetPackBuf());
+                lpOutPacker->Release();
+            }
+            return;
+        }
+
+        //重新组装转换后的列表字符串
+        int j = 0;
+        lpOutUnPacker = lpOutPacker->UnPack();
+        while (!lpOutUnPacker->IsEOF())
+        {
+            if (j)
+            {
+                sprintf(sStockTypeList, "%s,%d", sStockTypeList, lpOutUnPacker->GetInt("stock_type"));
+            } else
+            {
+                sprintf(sStockTypeList, "%d", lpOutUnPacker->GetInt("stock_type"));
+            }
+            j++;
+            lpOutUnPacker->Next();
+        }
+
+        strcpy(pStockTypeArr[i], sStockTypeList);
+
+        //重置
+        memset(sStockTypeList, 0, sizeof (sStockTypeList));
+        memset(sWhereStr, 0, sizeof (sWhereStr));
+    }
+
+    //释放资源
+    if (lpInPacker)
+    {
+        free(lpInPacker->GetPackBuf());
+        lpInPacker->Release();
+    }
+    if (lpOutPacker)
+    {
+        free(lpOutPacker->GetPackBuf());
+        lpOutPacker->Release();
+    }
+}

@@ -1,0 +1,257 @@
+/* 
+ * File:   FuturesInfoSync.pc
+ * Author: sunhm15168
+ *
+ * Created on 2016年2月16日, 上午9:45
+ */
+#include "FuturesInfoSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CFuturesInfoSync::CFuturesInfoSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tfuturesinfo");
+    strcpy(m_sSrcView, "VO4JC_FUTURESINFO");
+    strcpy(m_sTmpTable, "sync_futuresinfo");
+    strcpy(m_sDstTable, "jc_tfuturesinfo");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CFuturesInfoSync::~CFuturesInfoSync()
+{
+
+}
+
+bool CFuturesInfoSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    //声明结构体变量
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+
+    typedef struct FuturesInfoRecord
+    {
+        char    market_no[BATCH_ROWS][2];
+        char    report_code[BATCH_ROWS][33];
+        int     month[BATCH_ROWS];
+        char    target_market[BATCH_ROWS][2];
+        char    target_code[BATCH_ROWS][21];
+        int     multiple[BATCH_ROWS];
+        int     last_trade_date[BATCH_ROWS];
+        int     last_settlement_date[BATCH_ROWS];
+        int     last_trade_time[BATCH_ROWS];
+        double  settle_price[BATCH_ROWS];
+        double  real_price[BATCH_ROWS];
+        double  pre_settle_price[BATCH_ROWS];
+        double  position_quantity[BATCH_ROWS];
+        double  pre_position_quantity[BATCH_ROWS];
+        char    market_price_enable[BATCH_ROWS][2];
+        int     future_kind_id[BATCH_ROWS];
+        char    stock_type[BATCH_ROWS][3];
+        char    future_status[BATCH_ROWS][2];
+    } FuturesInfoRecord;
+    FuturesInfoRecord *lpFuturesInfoRecord;
+    EXEC SQL END DECLARE SECTION;
+    lpFuturesInfoRecord = new FuturesInfoRecord();
+    if (NULL == lpFuturesInfoRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【FuturesInfoRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpFuturesInfoRecord, 0, sizeof (FuturesInfoRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR
+        SELECT 
+        MARKET_NO,                  REPORT_CODE,               MONTH,               TARGET_MARKET,           TARGET_CODE,               MULTIPLE, 
+        LAST_TRADE_DATE,            LAST_SETTLEMENT_DATE,      LAST_TRADE_TIME,     SETTLE_PRICE,            REAL_PRICE,                PRE_SETTLE_PRICE,                   POSITION_QUANTITY, 
+        PRE_POSITION_QUANTITY,      MARKET_PRICE_ENABLE,       FUTURE_KIND_ID,      STOCK_TYPE,              FUTURE_STATUS
+        FROM VO4JC_FUTURESINFO;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpFuturesInfoRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpFuturesInfoRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFuturesInfoRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+            insert into sync_futuresinfo(
+                    market_no,                  report_code,                month,                      target_market,         target_code,
+                    multiple,                   last_trade_date,            last_settlement_date,       last_trade_time,       settle_price,        real_price,     
+                    pre_settle_price,           position_quantity,          pre_position_quantity,      market_price_enable,   future_kind_id,      stock_type,         future_status)
+             values(rtrim(:lpFuturesInfoRecord->market_no),
+                    rtrim(:lpFuturesInfoRecord->report_code),           
+                    :lpFuturesInfoRecord->month, 
+                    rtrim(:lpFuturesInfoRecord->target_market),
+                    rtrim(:lpFuturesInfoRecord->target_code),
+                    :lpFuturesInfoRecord->multiple,
+                    :lpFuturesInfoRecord->last_trade_date,
+                    :lpFuturesInfoRecord->last_settlement_date,
+                    :lpFuturesInfoRecord->last_trade_time,
+                    :lpFuturesInfoRecord->settle_price,
+                    :lpFuturesInfoRecord->real_price,
+                    :lpFuturesInfoRecord->pre_settle_price,
+                    :lpFuturesInfoRecord->position_quantity,
+                    :lpFuturesInfoRecord->pre_position_quantity,
+                    rtrim(:lpFuturesInfoRecord->market_price_enable),
+                    :lpFuturesInfoRecord->future_kind_id,
+                    rtrim(:lpFuturesInfoRecord->stock_type),
+                    rtrim(:lpFuturesInfoRecord->future_status));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpFuturesInfoRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    delete lpFuturesInfoRecord;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    return true;
+}
+
+bool CFuturesInfoSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，开始导入数据到O4表【" << m_sDstTable << "】");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+
+    if (!DropTableIndex())
+        return false;
+
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_START_INTER_CODE NUMBER := 0;"
+            "  V_INIT_TYPE       CHAR(1);"
+            "  V_TABLE_NAME_TMP  VARCHAR2(64);"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "  V_INIT_DATE   NUMBER(8);"
+            "BEGIN"
+            "  V_TABLE_NAME_TMP := '%s';"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  V_INIT_TYPE      := '%c';"
+            ""
+
+            "  SELECT MAX(TO_NUMBER(SUBSTR(TO_CHAR(INTER_CODE), 1, 7)))"
+            "    INTO V_START_INTER_CODE"
+            "    FROM (SELECT INTER_CODE,"
+            "                 CASE"
+            "                   WHEN MARKET_NO IN (1, 2, 5) AND LENGTH(REPORT_CODE) <= 6 AND"
+            "                        REGEXP_LIKE(REPORT_CODE, '^[0-9]+$') THEN"
+            "                    1"
+            "                   ELSE"
+            "                    0"
+            "                 END MM"
+            "            FROM JC_TCONVERTINTERCODE)"
+            "   WHERE MM = 0;"
+            "  V_START_INTER_CODE := CASE"
+            "                          WHEN V_START_INTER_CODE IS NULL THEN"
+            "                           0"
+            "                          ELSE"
+            "                           V_START_INTER_CODE - 1000000"
+            "                        END;"
+            ""
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            " SELECT INIT_DATE INTO V_INIT_DATE FROM JC_TSYSTEMINFO;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '||V_TABLE_NAME_O4||' (' ||"
+            "                    '   INTER_CODE,        MARKET_NO,          REPORT_CODE,        SYS_DATE,           MONTH,                          UNDERLYING_SECURITY_CODE,       MULTIPLE,               LAST_TRADE_DATE,            LAST_SETTLEMENT_DATE,           LAST_TRADE_TIME,'||"
+            "                    '   SETTLE_PRICE,      REAL_PRICE,         PRE_SETTLE_PRICE,   POSITION_QUANTITY,  PRE_POSITION_QUANTITY,          MARKET_PRICE_ENABLE,            FUTURE_KIND_ID,         STOCK_TYPE,                 FUTURE_STATUS)' || "
+            "                	 '  WITH V_FUTURES_INFO AS' || "
+            "                    '   (SELECT T11.MARKET_NO AS MARKET_NO_SRC,' || "
+            "                    '           T12.MARKET_NO,' || "
+            "                    '           T11.REPORT_CODE,' || "
+            "                    '           T13.MARKET_NO AS TARGET_MARKET,' || "
+            "                    '           T11.TARGET_CODE' || "
+            "                    '     FROM '||V_TABLE_NAME_TMP||' T11,JC_TCONVERTMARKETNO T12,JC_TCONVERTMARKETNO T13' || "
+            "                    '    WHERE T11.MARKET_NO=T12.MARKET_NO_SRC' || "
+            "                    '    AND T11.TARGET_MARKET=T13.MARKET_NO_SRC(+)),' || "
+            "                    'V_INTER_CODE AS' || "
+            "                    ' (SELECT T200.MARKET_NO_SRC,T200.MARKET_NO,T200.REPORT_CODE,' || "
+            "                    '   CASE WHEN T200.INTER_CODE IS NOT NULL THEN ' || "
+            "                    '   T200.INTER_CODE ' || "
+            "                    '   ELSE (CASE WHEN '||V_INIT_TYPE||'=''1'' THEN NULL ELSE SF_CREATE_INTERCODE_WITH_INDEX(T200.MARKET_NO, T200.REPORT_CODE, '||V_START_INTER_CODE||'+T200.RN) END) ' || "
+            "                    '   END INTER_CODE,' || "
+            "                    '   T200.UNDERLYING_INTER_CODE' || "
+            "                    ' FROM (SELECT T21.*,T22.INTER_CODE,T23.INTER_CODE AS UNDERLYING_INTER_CODE,' || "
+            "                    '      ROW_NUMBER() OVER(ORDER BY CASE WHEN T22.INTER_CODE IS NULL THEN 1 ELSE 2 END) RN' || "
+            "                    '      FROM V_FUTURES_INFO T21,JC_TCONVERTINTERCODE T22,JC_TCONVERTINTERCODE T23' || "
+            "                    '      WHERE T21.MARKET_NO=T22.MARKET_NO(+)' || "
+            "                    '      AND T21.REPORT_CODE=T22.REPORT_CODE(+)' || "
+            "                    '      AND T21.TARGET_MARKET=T23.MARKET_NO(+)' || "
+            "                    '      AND T21.TARGET_CODE=T23.REPORT_CODE(+) ) T200)' || "
+            "                    '      SELECT C.INTER_CODE,            C.MARKET_NO,                       C.REPORT_CODE,             '||V_INIT_DATE||',' || "
+            "                    '             A.MONTH,                 NVL(C.UNDERLYING_INTER_CODE, 0),   A.MULTIPLE,                 A.LAST_TRADE_DATE,' || "
+            "                    '             A.LAST_SETTLEMENT_DATE,  A.LAST_TRADE_TIME,                  A.SETTLE_PRICE,             A.REAL_PRICE,'   ||  "
+            "                    '             A.PRE_SETTLE_PRICE,      A.POSITION_QUANTITY,                A.PRE_POSITION_QUANTITY,    A.MARKET_PRICE_ENABLE,'  ||  "
+            "                    '             A.FUTURE_KIND_ID,        B.STOCK_TYPE,                       A.FUTURE_STATUS' || "
+            "                    '    FROM '||V_TABLE_NAME_TMP||'  A,   JC_TCONVERTSTOCKTYPE B, V_INTER_CODE C'|| "
+            "                    '  WHERE A.STOCK_TYPE = B.STOCK_TYPE_SRC   AND   A.MARKET_NO = C.MARKET_NO_SRC AND A.REPORT_CODE = C.REPORT_CODE';"
+            "   IF V_INIT_TYPE<>'1' THEN"
+            "       EXECUTE IMMEDIATE 'insert into jc_tconvertintercode select a.inter_code, a.market_no, a.report_code, '' '' from     '||V_TABLE_NAME_O4||' a where a.inter_code not in (select inter_code from jc_tconvertintercode)';"
+            "   END IF;"
+            "   COMMIT;"
+            "END;", m_sTmpTable, m_sDstTable, m_cSyncFlag);
+
+
+    if (m_cSyncFlag == '2')
+    {
+        hsLockCreateInterCode();
+    }
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (m_cSyncFlag == '2')
+    {
+        hsUnlockCreateInterCode();
+    }
+    
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    
+    if (!RecoverTableIndex())
+        return false;
+
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+

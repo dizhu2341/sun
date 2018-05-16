@@ -1,0 +1,71 @@
+##########################################################################
+##概    要:
+##  Makefile for VC6.0++
+##
+##  文件名: makefile.mvc
+##  模块名: fsc_arbmgr.dll
+##  模块说明: 
+##
+##  -------------------------------------------------
+##  Copyright (C) 2008-2010 HUNDSUN TECHNOLOGIES INC.
+##  Hangzhou, China, Fri July 29 11:05:51 GMT 2016
+##  -------------------------------------------------
+##作    者: 公司研发中心 chengjin
+##创建时间: 2016-07-29
+##备    注: 
+##
+##修改记录: 
+##########################################################################
+
+#OBJ扩展名定义
+OBJ = obj
+
+#目标定义
+OBJS = fsc_arbmgr_impl.$(OBJ)
+DLL = fsc_arbmgr
+DLL_EXP=/EXPORT:GetArbmgrInfo /EXPORT:GetArbmgrInstance /EXPORT:GetArbmgrDependSvr /EXPORT:ArbmgrInit
+
+#源代码路径
+FBASE_HOME = ..\..
+
+#include路径
+INCDIR=/I$(FBASE_HOME)
+
+#dll输出路径
+OUTDIR = $(FBASE_HOME)\Lib\vc
+
+#自定义编译(-Dxxx should be added to DEFS macro):
+#DEFS = -DPLUGINAPI_EXPORTS
+
+#编译，连接选项
+CFLAGS = -c -nologo -W3 -GX -MD  $(DEFS)
+DLLFLAGS = /LD
+STDLIBS=
+DEFLIBS=/link
+LIBPATH=$(FBASE_HOME)\Lib\vc
+
+#debug版本
+!IFDEF _DEBUG
+DLL = $(DLL)_d
+CFLAGS = -c -nologo -W3 -GX -MDd -Zi $(DEFS)
+!ENDIF
+
+#编译连接命令
+CC = cl
+LD = $(CC)
+
+all: $(DLL)
+fsc_arbmgr_impl.$(OBJ): fsc_arbmgr_impl.cpp
+	$(CC) $(CFLAGS) fsc_arbmgr_impl.cpp $(INCDIR)
+
+$(DLL): $(OBJS)
+	$(CC) $(DLLFLAGS) -o$(OUTDIR)\$(DLL) $(OBJS) $(STDLIBS) $(DEFLIBS) $(DLL_EXP)
+
+
+#资源清理命令
+cleanobj:
+	-del *.odb,$(OUTDIR)\$(DLL).exp,*.obj,*.pch,*.pdb,*.ilk,*.dsp,*.dsw,*.ncb,*.opt
+
+clean:  cleanobj
+	-del *~,$(OUTDIR)\$(DLL).lib,$(OUTDIR)\$(DLL).dll
+

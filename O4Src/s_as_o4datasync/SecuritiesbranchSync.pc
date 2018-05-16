@@ -1,0 +1,267 @@
+#include "SecuritiesbranchSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CSecuritiesbranchSync::CSecuritiesbranchSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tsecuritiesbranch");
+    strcpy(m_sSrcView, "VO4JC_SECURITIESBRANCH");
+    strcpy(m_sTmpTable, "sync_securitiesbranch");
+    strcpy(m_sDstTable, "jc_tsecuritiesbranch");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CSecuritiesbranchSync::~CSecuritiesbranchSync()
+{
+}
+
+bool CSecuritiesbranchSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int nFetchRows;
+    //声明结构体变量
+
+    typedef struct SecuritiesbranchRecord
+    {
+        int branch_id[BATCH_ROWS];
+        char branch_code[BATCH_ROWS][33];
+        char branch_name[BATCH_ROWS][257];
+        char sequare_code[BATCH_ROWS][257];
+        char entrust_directions[BATCH_ROWS][1025];
+        char distribution_flag[BATCH_ROWS][2];
+        char broker_no[BATCH_ROWS][33];
+        char special_busin[BATCH_ROWS][1025];
+        char report_unit[BATCH_ROWS][2];
+        char net_value_flag[BATCH_ROWS][2];
+        char sys_branch_code[BATCH_ROWS][9];
+        char clear_data_type[BATCH_ROWS][2];
+        char broker_liq_property[BATCH_ROWS][128];
+        char counter_type[BATCH_ROWS][2];
+        char futures_interface_type[BATCH_ROWS][2];
+        char need_branch_check[BATCH_ROWS][2];
+        int clear_counter_type[BATCH_ROWS];
+    } SecuritiesbranchRecord;
+    SecuritiesbranchRecord *lpSecuritiesbranchRecord = NULL;
+    char (*pEntrustDirArr)[1025];
+    EXEC SQL END DECLARE SECTION;
+
+    // 申请内存空间
+    lpSecuritiesbranchRecord = new SecuritiesbranchRecord();
+    if (NULL == lpSecuritiesbranchRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【SecuritiesbranchRecord】失败", m_sDstTable);
+        return false;
+    }
+    memset(lpSecuritiesbranchRecord, 0, sizeof (SecuritiesbranchRecord));
+
+    //-------------------------------------------------------------------------
+    // 从O32读取数据放入到结构体
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+                    select branch_id, branch_code, branch_name, sequare_code, entrust_directions, distribution_flag, broker_no, special_busin, report_unit, net_value_flag, sys_branch_code, clear_data_type,  
+                        broker_liq_property, counter_type, futures_interface_type, need_branch_check, clear_counter_type
+                    from VO4JC_SECURITIESBRANCH;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);
+        delete lpSecuritiesbranchRecord;
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+
+    pEntrustDirArr = new char[BATCH_ROWS][1025];
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpSecuritiesbranchRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpSecuritiesbranchRecord;
+            delete pEntrustDirArr;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+        ConvertEntrustDirList(pEntrustDirArr, lpSecuritiesbranchRecord->entrust_directions);
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_securitiesbranch(branch_id, branch_code, branch_name, sequare_code, entrust_directions, distribution_flag, 
+                    broker_no, special_busin, report_unit, net_value_flag, sys_branch_code, clear_data_type,broker_liq_property, counter_type, futures_interface_type, need_branch_check, clear_counter_type)
+             values(:lpSecuritiesbranchRecord->branch_id,
+                    rtrim(:lpSecuritiesbranchRecord->branch_code),
+                    rtrim(:lpSecuritiesbranchRecord->branch_name),
+                    rtrim(:lpSecuritiesbranchRecord->sequare_code),
+                    rtrim(:pEntrustDirArr),
+                    rtrim(:lpSecuritiesbranchRecord->distribution_flag),
+                    rtrim(:lpSecuritiesbranchRecord->broker_no),
+                    rtrim(:lpSecuritiesbranchRecord->special_busin),
+                    rtrim(:lpSecuritiesbranchRecord->report_unit),
+                    rtrim(:lpSecuritiesbranchRecord->net_value_flag),
+                    rtrim(:lpSecuritiesbranchRecord->sys_branch_code),
+                    rtrim(:lpSecuritiesbranchRecord->clear_data_type),
+                    rtrim(:lpSecuritiesbranchRecord->broker_liq_property), 
+                    rtrim(:lpSecuritiesbranchRecord->counter_type),
+                    rtrim(:lpSecuritiesbranchRecord->futures_interface_type),
+                    rtrim(:lpSecuritiesbranchRecord->need_branch_check),
+                    :lpSecuritiesbranchRecord->clear_counter_type);
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpSecuritiesbranchRecord;
+            delete pEntrustDirArr;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpSecuritiesbranchRecord;
+    delete pEntrustDirArr;
+    return true;
+}
+
+bool CSecuritiesbranchSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+    if (!DropTableIndex())
+        return false;
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "  V_TABLE_NAME_O4   VARCHAR2(64);"
+            "BEGIN"
+            "  V_TABLE_NAME_O4  := '%s';"
+            "  EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "  EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "	'   BRANCH_ID,BRANCH_CODE,BRANCH_NAME,SEQUARE_CODE_LIST,ENTRUST_DIRECTION_LIST,BROKER_NO,SYS_BRANCH_CODE,DISTRIBUTION,REPORT_UNIT,NET_VALUE_FLAG,CLEAR_DATA_TYPE,SPECIAL_BUSIN,SPLITMERGE_DEAL_SH,	'   ||"
+            "   '   broker_liq_property, mortgage_deal_sh, counter_type, receive_count, futures_interface_type, need_branch_check, clear_counter_type)' ||"
+            "	'   SELECT T1.BRANCH_ID, NVL(T1.BRANCH_CODE,'' ''), NVL(T1.BRANCH_NAME,'' ''), NVL(T1.SEQUARE_CODE,'' ''), NVL(T1.ENTRUST_DIRECTIONS,'' ''),NVL(T1.BROKER_NO,'' ''),    '   ||"
+            "	'   NVL(T1.SYS_BRANCH_CODE,'' ''), NVL(T1.DISTRIBUTION_FLAG,'' ''),NVL(T1.REPORT_UNIT,'' ''), NVL(T1.NET_VALUE_FLAG,'' ''),NVL(T1.CLEAR_DATA_TYPE,'' ''),NVL(T1.SPECIAL_BUSIN,'' ''), CASE WHEN INSTR(T1.SPECIAL_BUSIN, ''4'')>0 THEN  ''1'' ELSE ''0'' END ,'  ||"
+            "   '   T1.broker_liq_property, CASE WHEN INSTR(T1.SPECIAL_BUSIN, ''1'')>0 THEN  ''1'' ELSE ''0'' END, T1.counter_type, 200 as receive_count, nvl(T1.futures_interface_type, ''1''), nvl(T1.need_branch_check, ''0''), nvl(T1.clear_counter_type, -1) ' ||"
+            "	'   FROM SYNC_SECURITIESBRANCH T1 ';"
+            "  COMMIT;"
+            "END;", m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+void CSecuritiesbranchSync::ConvertEntrustDirList(char (*pEntrustDirArr)[1025], char sEntrustDirSrc[BATCH_ROWS][1025])
+{
+    int nRet = 0;
+    int nErrNo = 0;
+    char sErrInfo[1025] = {0};
+    char sErrPathInfo[4001] = {0};
+    char sWhereStr[2048] = {0};
+    char sEntrustDirList[4000] = {0};
+
+    IF2PackSvr * lpPackService = m_lpContext->GetF2PackSvr();
+    IF2Packer * lpInPacker = lpPackService->GetPacker(2);
+    IF2Packer * lpOutPacker = lpPackService->GetPacker(2);
+    IF2UnPacker * lpOutUnPacker = NULL;
+
+    for (int i = 0; i < BATCH_ROWS; ++i)
+    {
+        //查询内存表
+        replace(sWhereStr, sEntrustDirSrc[i], ",", "','");
+        hs_snprintf(sWhereStr, sizeof (sWhereStr), "entrust_direction_src in ('%s')", sWhereStr);
+
+        lpInPacker->BeginPack();
+        lpInPacker->AddField("table_name", 'S');
+        lpInPacker->AddField("column_str", 'S');
+        lpInPacker->AddField("where_str", 'S', 2048);
+        lpInPacker->AddField("error_pathinfo", 'S', 4000);
+        lpInPacker->AddStr("jc_tconvertentrustdir");
+        lpInPacker->AddStr("entrust_direction");
+        lpInPacker->AddStr(sWhereStr);
+        lpInPacker->AddStr(" ");
+        lpInPacker->EndPack();
+
+        lpOutPacker->BeginPack();
+        nRet = GetMdbData(m_lpContext, lpInPacker->UnPack(), lpOutPacker, &nErrNo, sErrInfo, sErrPathInfo);
+        lpOutPacker->EndPack();
+        if (nRet != 0)
+        {
+            SetErrorInfo(SYNC_ERR_OTHER, "【%s】表同步，转换委托方向列表时读取内存表失败【%s】", m_sDstTable, sErrInfo);
+
+            if (lpInPacker)
+            {
+                free(lpInPacker->GetPackBuf());
+                lpInPacker->Release();
+            }
+            if (lpOutPacker)
+            {
+                free(lpOutPacker->GetPackBuf());
+                lpOutPacker->Release();
+            }
+            return;
+        }
+
+        //重新组装转换后的列表字符串
+        int j = 0;
+        lpOutUnPacker = lpOutPacker->UnPack();
+        while (!lpOutUnPacker->IsEOF())
+        {
+            if (j)
+            {
+                sprintf(sEntrustDirList, "%s,%d", sEntrustDirList, lpOutUnPacker->GetInt("entrust_direction"));
+            } else
+            {
+                sprintf(sEntrustDirList, "%d", lpOutUnPacker->GetInt("entrust_direction"));
+            }
+            j++;
+            lpOutUnPacker->Next();
+        }
+
+        strcpy(pEntrustDirArr[i], sEntrustDirList);
+
+        //重置
+        memset(sEntrustDirList, 0, sizeof (sEntrustDirList));
+        memset(sWhereStr, 0, sizeof (sWhereStr));
+    }
+
+    //释放资源
+    if (lpInPacker)
+    {
+        free(lpInPacker->GetPackBuf());
+        lpInPacker->Release();
+    }
+    if (lpOutPacker)
+    {
+        free(lpOutPacker->GetPackBuf());
+        lpOutPacker->Release();
+    }
+}
+

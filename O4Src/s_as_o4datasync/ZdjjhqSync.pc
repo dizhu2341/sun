@@ -1,0 +1,204 @@
+#include "ZdjjhqSync.h"
+#define SQLCA_STORAGE_CLASS extern
+#include <sqlca.h>
+
+CZdjjhqSync::CZdjjhqSync(IAS2Context * lpContext) : CDataSync(lpContext)
+{
+    strcpy(m_sSrcTable, "tzhongdenghq");
+    strcpy(m_sSrcView, "VO4JC_ZHONGDENGHQ");
+    strcpy(m_sTmpTable, "sync_zdjjhq");
+    strcpy(m_sDstTable, "jc_tzdjjhq");
+    m_nBatchRows = BATCH_ROWS;
+    EXEC SQL WHENEVER SQLERROR DO SqlErrorAction();
+}
+
+CZdjjhqSync::~CZdjjhqSync()
+{
+}
+
+bool CZdjjhqSync::ExpO3View2Temp()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】开始");
+
+    // 准备RPOC执行上下文
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;        
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        int nFetchRows;
+        //声明结构体变量
+
+        typedef struct ZdjjhqRecord
+        {
+            char jhjjdm [BATCH_ROWS][33];
+            char jhggrq [BATCH_ROWS][9];
+            char jhjjjc [BATCH_ROWS][65];
+            char jhjjzt [BATCH_ROWS][11];
+            char jhjzrq [BATCH_ROWS][9];
+            double jhjjjz [BATCH_ROWS];
+            double jhjljz [BATCH_ROWS];
+            char jhcfzt [BATCH_ROWS][11];
+            char jhzjdm [BATCH_ROWS][33];
+            int jhcfbl [BATCH_ROWS];
+            double jhhbsl [BATCH_ROWS];
+            double jhcfsl [BATCH_ROWS];
+            char jhzhzt [BATCH_ROWS][11];
+            char jhbyzd [BATCH_ROWS][33];
+            char jhgrdm [BATCH_ROWS][33];
+            char jhtadm [BATCH_ROWS][33];
+            char market_no_zjj[BATCH_ROWS][2];
+            char market_no[BATCH_ROWS][2];
+            char report_code_zjj[BATCH_ROWS][32];
+            char report_code[BATCH_ROWS][32];
+        } ZdjjhqRecord;
+        ZdjjhqRecord *lpZdjjhqRecord = NULL;
+    EXEC SQL END DECLARE SECTION;
+    
+    // 从O32读取数据放入到结构体    
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】数据开始");
+    sql_context o3Ctx = m_lpO3Conn->getSQLContext();
+    if (NULL == o3Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取O3/PB数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL DECLARE CUR_READDATA CURSOR FOR 
+        select 
+            jhjjdm, jhggrq, jhjjjc, jhjjzt, jhjzrq,jhjjjz, jhjljz, jhcfzt, jhzjdm, jhcfbl, jhhbsl, jhcfsl, jhzhzt,jhbyzd, jhgrdm, jhtadm, market_no_zjj, market_no, report_code_zjj, report_code
+        from VO4JC_ZHONGDENGHQ;
+    EXEC SQL OPEN CUR_READDATA;
+    if (sqlca.sqlcode < 0)
+    {
+        SetErrorInfo(SYNC_ERR_QUERY_SRC_TABLE, "【%s】表同步，查询O3View【%s】数据失败【%s】", m_sDstTable, m_sSrcView, sqlca.sqlerrm.sqlerrmc);        
+        return false;
+    }
+    LOGDETAIL("【" << m_sDstTable << "】表同步，查询O3View【" << m_sSrcView << "】完成，总行数【" << m_nTotalRows << "】条");
+    
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取基础数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    
+    // 申请内存空间
+    lpZdjjhqRecord = new ZdjjhqRecord();
+    if (NULL == lpZdjjhqRecord)
+    {
+        SetErrorInfo(SYNC_ERR_MALLOC_MEMORY, "【%s】表同步，申请结构体内存【ZdjjhqRecord】失败", m_sDstTable);
+        return false;
+    }
+        
+    // 从游标批量导入到O4临时表
+    for (int i = 0; i < m_nLoopTimes; ++i)
+    {
+        memset(lpZdjjhqRecord, 0, sizeof (ZdjjhqRecord));
+        // 从游标导入内存
+        EXEC SQL CONTEXT USE :o3Ctx;
+        EXEC SQL FETCH CUR_READDATA into :lpZdjjhqRecord;
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(SYNC_ERR_EXPORT_DATA_TEMP, "【%s】表同步，导入数据到中间转换表【%s】时FETCH数据失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpZdjjhqRecord;
+            return false;
+        }
+
+        // 从内存导入临时表
+        nFetchRows = (i == (m_nLoopTimes - 1)) ? m_nRemainRows : m_nBatchRows;
+
+        EXEC SQL CONTEXT USE :o4Ctx;
+        EXEC SQL for :nFetchRows
+             insert into sync_zdjjhq(jhjjdm, jhggrq, jhjjjc, jhjjzt, jhjzrq,jhjjjz, jhjljz, jhcfzt, jhzjdm, jhcfbl, jhhbsl, jhcfsl, jhzhzt,jhbyzd, jhgrdm, jhtadm, mother_market_no, market_no, mother_report_code, report_code)
+             values(rtrim(:lpZdjjhqRecord->jhjjdm),
+                    rtrim(:lpZdjjhqRecord->jhggrq),
+                    rtrim(:lpZdjjhqRecord->jhjjjc),
+                    rtrim(:lpZdjjhqRecord->jhjjzt),
+                    rtrim(:lpZdjjhqRecord->jhjzrq),
+                    :lpZdjjhqRecord->jhjjjz,
+                    :lpZdjjhqRecord->jhjljz,
+                    rtrim(:lpZdjjhqRecord->jhcfzt),
+                    rtrim(:lpZdjjhqRecord->jhzjdm),
+                    :lpZdjjhqRecord->jhcfbl,
+                    :lpZdjjhqRecord->jhhbsl,
+                    :lpZdjjhqRecord->jhcfsl,
+                    rtrim(:lpZdjjhqRecord->jhzhzt),
+                    rtrim(:lpZdjjhqRecord->jhbyzd),
+                    rtrim(:lpZdjjhqRecord->jhgrdm),
+                    rtrim(:lpZdjjhqRecord->jhtadm),
+                    :lpZdjjhqRecord->market_no_zjj,
+                    rtrim(:lpZdjjhqRecord->market_no),
+                    :lpZdjjhqRecord->report_code_zjj,
+                    rtrim(:lpZdjjhqRecord->report_code));
+        if (sqlca.sqlcode < 0)
+        {
+            SetErrorInfo(DB_ERR_INSERT, "【%s】表同步，导入数据到中间转换表【%s】失败【%s】", m_sDstTable, m_sTmpTable, sqlca.sqlerrm.sqlerrmc);
+            delete lpZdjjhqRecord;
+            return false;
+        }
+        EXEC SQL COMMIT;
+    }
+
+    EXEC SQL CONTEXT USE :o3Ctx;
+    EXEC SQL CLOSE CUR_READDATA;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到中间转换表【" << m_sTmpTable << "】完成");
+    delete lpZdjjhqRecord;
+    return true;
+}
+
+bool CZdjjhqSync::ExpTemp2Dst()
+{
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】开始");
+
+    struct sqlca sqlca;
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL BEGIN DECLARE SECTION;
+        char sExecSql[10240] = {0};
+    EXEC SQL END DECLARE SECTION;
+    
+    sql_context o4Ctx = m_lpO4Conn->getSQLContext();
+    if (NULL == o4Ctx)
+    {
+        SetErrorInfo(DB_ERR_CONNECTION, "【%s】表同步，获取基础数据库连接句柄失败", m_sDstTable);
+        return false;
+    }
+    
+    if (!DropTableIndex())
+        return false;
+    EXEC SQL CONTEXT USE :o4Ctx;
+    sprintf(sExecSql, "DECLARE"
+            "   V_TABLE_NAME_O4   VARCHAR2(64);"
+            "   V_INIT_DATE       NUMBER(8);"
+            "BEGIN"
+            "   V_TABLE_NAME_O4  := '%s';"
+            "   EXECUTE IMMEDIATE 'truncate table ' || V_TABLE_NAME_O4;"
+            "   SELECT INIT_DATE INTO V_INIT_DATE FROM JC_TSYSTEMINFO;"
+            "   EXECUTE IMMEDIATE 'INSERT INTO '|| V_TABLE_NAME_O4 || '(' || "
+            "   '   SYS_DATE,JHJJDM,JHJJJC,JHJJZT,JHJZRQ,JHJJJZ,JHJLJZ,JHCFZT,JHZJDM,JHCFBL,JHHBSL,JHCFSL,JHZHZT,JHGRDM,JHTADM, INTER_CODE, MOTHER_INTER_CODE)   '   ||"
+            "	'   SELECT '||V_INIT_DATE||', NVL(T1.JHJJDM,'' ''),NVL(T1.JHJJJC,'' ''),NVL(T1.JHJJZT,'' ''),NVL(T1.JHJZRQ,'' ''),T1.JHJJJZ,T1.JHJLJZ,NVL(T1.JHCFZT,'' ''),'   ||"
+            "	'   NVL(T1.JHZJDM,'' ''),T1.JHCFBL,T1.JHHBSL,T1.JHCFSL,NVL(T1.JHZHZT,'' ''),NVL(T1.JHGRDM,'' ''),NVL(T1.JHTADM,'' ''), T3.INTER_CODE AS INTER_CODE, T4.INTER_CODE AS MOTHER_INTER_CODE' ||  "
+            "	'   FROM  sync_zdjjhq T1, JC_TCONVERTMARKETNO T2, JC_TCONVERTINTERCODE T3, JC_TCONVERTINTERCODE T4'  ||"
+            "   '   WHERE T1.MARKET_NO = T2.MARKET_NO_SRC' ||" 
+            "   '   AND T1.MOTHER_MARKET_NO = T2.MARKET_NO_SRC' ||"
+            "   '   AND T2.MARKET_NO = T3.MARKET_NO' ||"
+            "   '   AND T2.MARKET_NO = T4.MARKET_NO' ||"
+            "   '   AND T1.REPORT_CODE = T3.REPORT_CODE ' ||"
+            "   '   AND T1.MOTHER_REPORT_CODE = T4.REPORT_CODE'; "
+            "  COMMIT;"
+            "END;",m_sDstTable);
+
+    EXEC SQL EXECUTE IMMEDIATE :sExecSql;
+    if (sqlca.sqlcode < 0)
+    {
+        RecoverTableIndex();
+        SetErrorInfo(SYNC_ERR_IMPORT_DATA_DST, "【%s】表同步，导入数据到O4表【%s】失败【%s】", m_sDstTable, m_sDstTable, sqlca.sqlerrm.sqlerrmc);
+        return false;
+    }
+
+    if (!RecoverTableIndex())
+        return false;
+    LOGDETAIL("【" << m_sDstTable << "】表同步，导入数据到O4表【" << m_sDstTable << "】完成");
+    return true;
+}
+
+
